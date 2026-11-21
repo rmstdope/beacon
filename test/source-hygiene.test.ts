@@ -1,23 +1,24 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /** Invisible or direction-changing characters in source hide what code does ("Trojan Source"). */
 const INVISIBLE = /[\p{Cf}\u00A0]/u;
 
-function files(dir: string): string[] {
-  return readdirSync(dir).flatMap((name) => {
-    const path = join(dir, name);
-    return statSync(path).isDirectory() ? files(path) : [path];
-  });
-}
-
-describe("source files", () => {
+describe("tracked files", () => {
   it("contain no literal invisible or bidirectional characters; write them as \\u escapes", () => {
-    const offenders = ["src", "test"]
-      .flatMap(files)
-      .filter((path) => path.endsWith(".ts"))
-      .filter((path) => INVISIBLE.test(readFileSync(path, "utf8")));
+    const tracked = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard"], {
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((path) => path !== "" && !path.startsWith("docs/") && path !== "pnpm-lock.yaml");
+    const offenders = tracked.filter((path) => {
+      try {
+        return INVISIBLE.test(readFileSync(path, "utf8"));
+      } catch {
+        return false; // deleted in the working tree
+      }
+    });
     expect(offenders).toEqual([]);
   });
 });

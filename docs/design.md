@@ -159,8 +159,8 @@ HTML, image embeds that act as tracking pixels, and text aimed at AI agents that
 Beacon neutralises all of it before anything reaches GitHub.
 
 **Title:** `<reporter's title>`, after unsafe characters are stripped (below), whitespace is collapsed,
-and every `@`, `#` and `GH-` is followed by a zero-width space (so `@someone` cannot notify anyone
-and `#12` or `GH-12` cannot cross-link to another issue). The type is shown
+and a zero-width space is inserted after every `@` and `#` and inside every `GH-` (so `@someone`
+cannot notify anyone and `#12` or `GH-12` cannot cross-link to another issue). The type is shown
 by a label, not by a prefix in the title.
 
 **Labels:**
@@ -223,7 +223,7 @@ because nobody is there to read them (cerebro PR #544).
 - **Tokens:** Beacon signs a JWT with the App's private key, looks up the installation for the target
   repository, and exchanges the JWT for an installation token scoped to that one repository.
   Installation IDs, tokens and the labels known to exist are cached in memory; a token is renewed
-  five minutes before it expires (tokens last an hour). After a 401, 403 or 404 the cached
+  five minutes before it expires (tokens last an hour). After a 401 or 404 the cached
   installation and token for that repository are dropped, so a reinstall or revoked token recovers
   on the next report. Nothing is written to disk. A PKCS#1 key, as GitHub issues it, is converted
   to PKCS#8 at start-up.

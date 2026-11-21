@@ -38,6 +38,7 @@ describe("rateLimitKey", () => {
 
   it("treats an IPv4-mapped IPv6 address as IPv4", () => {
     expect(rateLimitKey("::ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(rateLimitKey("::ffff:cb00:7107")).toBe("203.0.113.7");
   });
 
   it("passes through anything else unchanged", () => {

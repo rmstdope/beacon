@@ -34,8 +34,11 @@ const LABEL_STYLE: Record<string, { color: string; description: string }> = {
 /** Installation tokens live an hour; renew this long before they expire. */
 const TOKEN_RENEW_MS = 5 * 60_000;
 
-/** Statuses after which cached installation IDs and tokens may be stale (uninstalled, revoked). */
-const AUTH_FAILURES = new Set([401, 403, 404]);
+/**
+ * Statuses after which cached installation IDs and tokens may be stale (uninstalled, revoked).
+ * Not 403: GitHub also answers 403 for rate limits, and re-authenticating then only adds calls.
+ */
+const AUTH_FAILURES = new Set([401, 404]);
 
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");

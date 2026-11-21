@@ -33,5 +33,11 @@ export function rateLimitKey(ip: string): string {
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
   if (mapped?.[1] !== undefined && isIPv4(mapped[1])) return mapped[1];
   if (!isIPv6(ip)) return ip;
-  return `${hextets(ip).slice(0, 4).join(":")}::/64`;
+  const parts = hextets(ip);
+  // An IPv4-mapped address written in hex (::ffff:cb00:7107) is still one IPv4 address.
+  if (parts.slice(0, 5).every((part) => part === "0") && parts[5] === "ffff" && !ip.includes(".")) {
+    const [high = 0, low = 0] = parts.slice(6).map((part) => parseInt(part, 16));
+    return [high >> 8, high & 255, low >> 8, low & 255].join(".");
+  }
+  return `${parts.slice(0, 4).join(":")}::/64`;
 }

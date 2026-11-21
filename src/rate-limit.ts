@@ -44,8 +44,13 @@ export class FixedWindowLimiter {
     const result = this.#check(key, now);
     if (!result.allowed) return result;
     const window = this.#windows.get(key);
-    if (window && now - window.start < this.#windowMs) window.count += 1;
-    else this.#windows.set(key, { start: now, count: 1 });
+    if (window && now - window.start < this.#windowMs) {
+      window.count += 1;
+    } else {
+      // Re-insert so the map stays ordered by window start, oldest first.
+      this.#windows.delete(key);
+      this.#windows.set(key, { start: now, count: 1 });
+    }
     return result;
   }
 

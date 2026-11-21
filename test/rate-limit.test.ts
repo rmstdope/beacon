@@ -67,5 +67,19 @@ describe("FixedWindowLimiter", () => {
     c.advance(1_000);
     expect(limiter.hit("d").allowed).toBe(true);
   });
+
+  it("reports the oldest live window's wait when full, even after a key's window was renewed", () => {
+    const c = clock();
+    const limiter = new FixedWindowLimiter({ limit: 5, windowMs: 1_000, maxKeys: 2, now: c.now });
+    limiter.hit("a");
+    c.advance(500);
+    limiter.hit("b");
+    c.advance(500);
+    limiter.hit("a"); // a's window renews at 1000; b (started at 500) is now the oldest
+    c.advance(400);
+    expect(limiter.hit("c")).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    c.advance(100);
+    expect(limiter.hit("c").allowed).toBe(true);
+  });
 });
 

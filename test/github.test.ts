@@ -158,6 +158,20 @@ describe("GitHubAppFiler.fileIssue", () => {
     expect(count("/access_tokens")).toBe(2);
   });
 
+  it("forgets the installation after a 404 too, but keeps it after a 403 rate limit", async () => {
+    for (const [status, lookups] of [[404, 2], [403, 1]] as const) {
+      let failing = true;
+      const gh = fakeGitHub({
+        "POST /repos/rmstdope/retroquest/issues": () => (failing ? json(status, {}) : json(201, { number: 1 })),
+      });
+      const f = filer(gh);
+      await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+      failing = false;
+      await f.fileIssue(repo, issue);
+      expect(gh.calls.filter((c) => c.path.endsWith("/installation")).length, String(status)).toBe(lookups);
+    }
+  });
+
   it("fails with a GitHubError when a success answer is not JSON", async () => {
     const gh = fakeGitHub({ "POST /repos/rmstdope/retroquest/issues": () => new Response("<html>", { status: 201 }) });
     await expect(filer(gh).fileIssue(repo, issue)).rejects.toThrow(GitHubError);
