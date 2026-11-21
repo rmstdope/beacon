@@ -1,7 +1,7 @@
 import type { HttpBindings } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { clientIp } from "./client-ip.js";
+import { clientIp, rateLimitKey } from "./client-ip.js";
 import type { Client } from "./config.js";
 import { GitHubError, type IssueFiler } from "./github.js";
 import { buildIssue } from "./issue.js";
@@ -109,17 +109,20 @@ export function createApp(options: AppOptions): Hono<Env> {
       // c.env is undefined when the app is driven without a Node server, as in tests.
       const bindings = c.env as Partial<HttpBindings> | undefined;
       const ip = clientIp(c.req.header("x-forwarded-for"), bindings?.incoming?.socket.remoteAddress);
-      for (const [limit, limiter, key] of [
-        ["ip", ipLimiter, ip],
+      const limits = [
+        ["ip", ipLimiter, rateLimitKey(ip)],
         ["client", clientLimiter, report.clientId],
-      ] as const) {
-        const result = limiter.hit(key);
+      ] as const;
+      // Check every limit before recording any, so one limit's refusal spends no other allowance.
+      for (const [limit, limiter, key] of limits) {
+        const result = limiter.peek(key);
         if (!result.allowed) {
           log({ event: "report.rate_limited", client: report.clientId, limit });
           c.header("Retry-After", String(result.retryAfterSeconds));
           return fail(c, 429, "rate_limited", "too many reports; try again later");
         }
       }
+      for (const [, limiter, key] of limits) limiter.hit(key);
 
       if (report.userAgent === undefined) {
         const header = c.req.header("user-agent");

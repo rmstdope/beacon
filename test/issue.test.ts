@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildIssue } from "../src/issue.js";
 import type { Report } from "../src/report.js";
 
-const ZWSP = "​";
+const ZWSP = "\u200B";
 
 const report: Report = {
   clientId: "retroquest",
@@ -23,12 +23,12 @@ describe("buildIssue", () => {
   });
 
   it("neutralises mentions and issue references in the title", () => {
-    const { title } = buildIssue({ ...report, title: "@octocat see #12 and GH-3" });
-    expect(title).toBe(`@${ZWSP}octocat see #${ZWSP}12 and GH-3`);
+    const { title } = buildIssue({ ...report, title: "@octocat see #12 and GH-3, gh-4" });
+    expect(title).toBe(`@${ZWSP}octocat see #${ZWSP}12 and GH${ZWSP}-3, gh${ZWSP}-4`);
   });
 
   it("strips control and bidirectional-override characters from the title", () => {
-    const { title } = buildIssue({ ...report, title: "a\u0000b‮c⁦d" });
+    const { title } = buildIssue({ ...report, title: "a\u0000b\u202Ec\u2066d" });
     expect(title).toBe("abcd");
   });
 
@@ -54,7 +54,7 @@ describe("buildIssue", () => {
   });
 
   it("normalises line endings and strips control characters from the description, keeping tabs", () => {
-    const { body } = buildIssue({ ...report, description: "a\r\nb\rc\td\u0007e‮f" });
+    const { body } = buildIssue({ ...report, description: "a\r\nb\rc\td\u0007e\u202Ef" });
     expect(body).toContain("```text\na\nb\nc\tdef\n```");
   });
 

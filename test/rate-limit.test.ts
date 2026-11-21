@@ -48,4 +48,24 @@ describe("FixedWindowLimiter", () => {
     limiter.hit("late");
     expect(limiter.size).toBe(1);
   });
+
+  it("peeks without consuming", () => {
+    const limiter = new FixedWindowLimiter({ limit: 1, windowMs: 60_000, now: clock().now });
+    expect(limiter.peek("a").allowed).toBe(true);
+    expect(limiter.peek("a").allowed).toBe(true);
+    limiter.hit("a");
+    expect(limiter.peek("a")).toEqual({ allowed: false, retryAfterSeconds: 60 });
+  });
+
+  it("refuses new keys once it tracks maxKeys live ones, so a flood cannot exhaust memory", () => {
+    const c = clock();
+    const limiter = new FixedWindowLimiter({ limit: 5, windowMs: 1_000, maxKeys: 3, now: c.now });
+    for (const key of ["a", "b", "c"]) expect(limiter.hit(key).allowed).toBe(true);
+    expect(limiter.hit("d")).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    expect(limiter.hit("a").allowed).toBe(true);
+    expect(limiter.size).toBe(3);
+    c.advance(1_000);
+    expect(limiter.hit("d").allowed).toBe(true);
+  });
 });
+

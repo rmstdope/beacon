@@ -96,10 +96,55 @@ describe("POST /v1/reports", () => {
 
   it("refuses a request without an Origin header", async () => {
     const { app, filer } = setup();
-    const res = await post(app, report, { origin: "" });
+    const res = await app.request("/v1/reports", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(report),
+    });
     expect(res.status).toBe(403);
     expect((await errorOf(res)).error).toBe("forbidden");
     expect(filer.filed).toHaveLength(0);
+  });
+
+  it("checks the origin before the body size", async () => {
+    const { app } = setup();
+    const res = await post(app, { ...report, description: "x".repeat(20_000) }, { origin: "https://evil.example" });
+    expect(res.status).toBe(403);
+  });
+
+  it("falls back to the socket address without X-Forwarded-For", async () => {
+    const { app } = setup();
+    const env = { incoming: { socket: { remoteAddress: "198.51.100.9" } } };
+    const send = () =>
+      app.request(
+        "/v1/reports",
+        { method: "POST", headers: { origin: RQ, "content-type": "application/json" }, body: JSON.stringify(report) },
+        env,
+      );
+    for (let i = 0; i < 5; i++) expect((await send()).status).toBe(201);
+    expect((await send()).status).toBe(429);
+    expect((await post(app, report, { "x-forwarded-for": "198.51.100.10" })).status).toBe(201);
+  });
+
+  it("limits a whole IPv6 /64 together", async () => {
+    const { app } = setup();
+    for (let i = 0; i < 5; i++) {
+      expect((await post(app, report, { "x-forwarded-for": `2001:db8:1:2::${String(i + 1)}` })).status).toBe(201);
+    }
+    expect((await post(app, report, { "x-forwarded-for": "2001:db8:1:2:ffff::9" })).status).toBe(429);
+    expect((await post(app, report, { "x-forwarded-for": "2001:db8:1:3::1" })).status).toBe(201);
+  });
+
+  it("does not spend an IP's allowance when the client limit refuses", async () => {
+    const now = () => 0;
+    const { app } = setup({ clientLimiter: new FixedWindowLimiter({ limit: 1, windowMs: 60_000, now }) });
+    expect((await post(app, report, { "x-forwarded-for": "203.0.113.1" })).status).toBe(201);
+    for (let i = 0; i < 6; i++) {
+      expect((await post(app, report, { "x-forwarded-for": "203.0.113.2" })).status).toBe(429);
+    }
+    const neser = { ...report, clientId: "neser" };
+    const fromNeser = { "x-forwarded-for": "203.0.113.2", origin: NESER };
+    expect((await post(app, neser, fromNeser)).status).toBe(201);
   });
 
   it("refuses an origin no client allows, without CORS headers", async () => {
@@ -199,11 +244,13 @@ describe("POST /v1/reports", () => {
     filer.failWith = new GitHubError("GitHub answered 503");
     await post(app, report);
     for (let i = 0; i < 6; i++) await post(app, report);
+    await post(app, { ...report, "SECRET-KEY-NAME": 1 });
     const all = logs.join("\n");
     expect(logs.length).toBeGreaterThan(0);
     expect(all).not.toContain("SECRET-DESCRIPTION-TEXT");
     expect(all).not.toContain("Score resets");
     expect(all).not.toContain("203.0.113.7");
+    expect(all).not.toContain("SECRET-KEY-NAME");
   });
 });
 

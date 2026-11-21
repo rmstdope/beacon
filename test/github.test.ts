@@ -130,10 +130,64 @@ describe("GitHubAppFiler.fileIssue", () => {
     const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
     expect(count("/installation")).toBe(1);
     expect(count("/access_tokens")).toBe(1);
+    t = Date.parse("2026-11-22T12:54:00Z");
+    await f.fileIssue(repo, issue);
+    expect(count("/access_tokens")).toBe(1);
     t = Date.parse("2026-11-22T12:56:00Z");
     await f.fileIssue(repo, issue);
     expect(count("/access_tokens")).toBe(2);
     expect(count("/installation")).toBe(1);
+  });
+
+  it("asks for a token scoped to the one repository", async () => {
+    const gh = fakeGitHub();
+    await filer(gh).fileIssue(repo, issue);
+    const exchange = gh.calls.find((c) => c.path.endsWith("/access_tokens"));
+    expect(exchange?.body).toEqual({ repositories: ["retroquest"] });
+  });
+
+  it("forgets the installation and token after an auth failure, so a reinstall recovers", async () => {
+    let status = 401;
+    const gh = fakeGitHub({ "POST /repos/rmstdope/retroquest/issues": () => json(status, { number: 18 }) });
+    const f = filer(gh);
+    await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+    status = 201;
+    expect(await f.fileIssue(repo, issue)).toBe(18);
+    const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
+    expect(count("/installation")).toBe(2);
+    expect(count("/access_tokens")).toBe(2);
+  });
+
+  it("fails with a GitHubError when a success answer is not JSON", async () => {
+    const gh = fakeGitHub({ "POST /repos/rmstdope/retroquest/issues": () => new Response("<html>", { status: 201 }) });
+    await expect(filer(gh).fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+  });
+
+  it("fails with a GitHubError when a success answer lacks the expected fields", async () => {
+    const noNumber = fakeGitHub({ "POST /repos/rmstdope/retroquest/issues": () => json(201, {}) });
+    await expect(filer(noNumber).fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+    const noToken = fakeGitHub({ "POST /app/installations/42/access_tokens": () => json(201, {}) });
+    await expect(filer(noToken).fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+  });
+
+  it("fails with a GitHubError when the answer's body stalls past the timeout", async () => {
+    const gh = fakeGitHub({
+      "POST /repos/rmstdope/retroquest/issues": () =>
+        new Response(new ReadableStream({ start() { /* never sends a byte */ } }), { status: 201 }),
+    });
+    const f = new GitHubAppFiler({ appId: "1", privateKeyPem, fetch: gh.fetch, timeoutMs: 50 });
+    await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+  });
+
+  it("applies one timeout to the whole report, not to each request", async () => {
+    const gh = fakeGitHub();
+    const slowEach = async (input: string | URL | Request, init?: RequestInit) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      init?.signal?.throwIfAborted();
+      return gh.fetch(input, init);
+    };
+    const f = new GitHubAppFiler({ appId: "1", privateKeyPem, fetch: slowEach, timeoutMs: 70 });
+    await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
   });
 
   it("fails with a GitHubError when the app is not installed on the repository", async () => {

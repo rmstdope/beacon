@@ -1,4 +1,5 @@
 import type { Report, ReportType } from "./report.js";
+import { stripUnsafe } from "./text.js";
 
 export interface Issue {
   title: string;
@@ -6,7 +7,7 @@ export interface Issue {
   labels: string[];
 }
 
-const ZWSP = "​";
+const ZWSP = "\u200B";
 
 const TYPE_LABELS: Record<ReportType, string> = {
   bug: "bug",
@@ -14,17 +15,9 @@ const TYPE_LABELS: Record<ReportType, string> = {
   feature: "feature-request",
 };
 
-/** Control characters except tab and line feed, plus bidirectional overrides and isolates. */
-// eslint-disable-next-line no-control-regex
-const UNSAFE_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F‪-‮⁦-⁩]/g;
-
-function stripUnsafe(value: string): string {
-  return value.replace(/\r\n?/g, "\n").replace(UNSAFE_CHARS, "");
-}
-
-/** Breaks `@mentions` and `#123` references so they neither notify nor cross-link. */
+/** Breaks `@mentions`, `#123` and `GH-123` references so they neither notify nor cross-link. */
 function neutraliseReferences(value: string): string {
-  return value.replace(/[@#]/g, (char) => char + ZWSP);
+  return value.replace(/[@#]/g, (char) => char + ZWSP).replace(/\b(gh)-(?=\d)/gi, `$1${ZWSP}-`);
 }
 
 /** A fenced block GitHub renders as plain text; the fence outlasts any backtick run inside. */

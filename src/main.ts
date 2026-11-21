@@ -58,7 +58,8 @@ function main(): void {
     clientLimiter: new FixedWindowLimiter({ limit: 50, windowMs: 60 * 60_000 }),
     revision,
     log: (entry) => {
-      log(entry.event.endsWith("failed") ? "warn" : "info", entry);
+      const level = entry.event === "report.upstream_failed" ? "warn" : entry.event.endsWith("failed") ? "error" : "info";
+      log(level, entry);
     },
   });
 
@@ -75,7 +76,9 @@ function main(): void {
   const shutdown = (signal: string) => {
     log("info", { event: "shutdown", signal });
     server.close(() => process.exit(0));
-    setTimeout(() => process.exit(0), 5_000).unref();
+    // Longer than one report's 8 s GitHub timeout, so an issue being filed is not cut off, and
+    // shorter than the 10 s Docker waits before it kills the container.
+    setTimeout(() => process.exit(0), 9_000).unref();
   };
   process.once("SIGTERM", () => {
     shutdown("SIGTERM");

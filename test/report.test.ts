@@ -73,7 +73,36 @@ describe("parseReport", () => {
   });
 
   it("rejects unknown fields, so no contact details slip through", () => {
-    expect(errorField({ ...valid, email: "a@b.c" })).toBe("email");
+    const result = parseReport({ ...valid, email: "a@b.c" });
+    expect(result).toMatchObject({ ok: false, field: "unknown_key" });
+    expect(!result.ok && result.message).toContain("email");
+  });
+
+  it("caps an unknown key's name in the message", () => {
+    const result = parseReport({ ...valid, ["k".repeat(5_000)]: 1 });
+    expect(!result.ok && result.message.length).toBeLessThan(200);
+  });
+
+  it("strips control and invisible characters before checking lengths", () => {
+    expect(errorField({ ...valid, title: "\u0001\u0002\u0003" })).toBe("title");
+    expect(errorField({ ...valid, title: "\u202E\u202E\u202E" })).toBe("title");
+    expect(errorField({ ...valid, description: "\u0000\u200B\u{E0041}" })).toBe("description");
+  });
+
+  it("strips C0, C1, format and tag characters, keeping tabs and line breaks", () => {
+    const hidden = String.fromCodePoint(0xe0049, 0xe0067, 0xe006e); // tag characters: invisible text
+    const result = parseReport({
+      ...valid,
+      title: "Score\u0085 re\u200Dsets\u00AD now" + hidden,
+      description: "a\r\nb\tc\u0080\u2060\u200Ed\uFEFF" + hidden,
+    });
+    expect(result.ok && result.report.title).toBe("Score resets now");
+    expect(result.ok && result.report.description).toBe("a\nb\tcd");
+  });
+
+  it("folds whitespace after stripping, so no double spaces remain", () => {
+    const result = parseReport({ ...valid, title: "a \u0001 bc" });
+    expect(result.ok && result.report.title).toBe("a bc");
   });
 
   it("rejects input that is not an object", () => {
