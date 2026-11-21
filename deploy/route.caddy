@@ -1,0 +1,4 @@
+beacon.rmstdope.eu {
+	encode zstd gzip
+	reverse_proxy beacon-web:8080
+}

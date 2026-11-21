@@ -1,0 +1,36 @@
+{
+  "services": {
+    "web": {
+      "image": "${WEB_IMAGE:?Set an immutable image reference}",
+      "user": "10001:10001",
+      "restart": "unless-stopped",
+      "init": true,
+      "read_only": true,
+      "mem_limit": "128m",
+      "cpus": 0.5,
+      "pids_limit": 128,
+      "env_file": ["${SECRETS_DIR}/web.env"],
+      "environment": { "PORT": "8080" },
+      "networks": { "proxy": { "aliases": ["beacon-web"] } },
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "/nodejs/bin/node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ],
+        "interval": "10s",
+        "timeout": "3s",
+        "retries": 6,
+        "start_period": "5s"
+      },
+      "logging": {
+        "driver": "json-file",
+        "options": { "max-size": "10m", "max-file": "3" }
+      }
+    }
+  },
+  "networks": {
+    "proxy": { "external": true, "name": "rmstdope-proxy" }
+  }
+}

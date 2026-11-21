@@ -27,10 +27,10 @@ Non-goals, for now:
 
 | Area | Decision | Why |
 |---|---|---|
-| Language and runtime | TypeScript on Node 24 LTS | Same runtime as the `control` app. A future SDK or widget can share the report types |
+| Language and runtime | TypeScript 6.0 on Node 24 LTS | Same runtime as the `control` app. A future SDK or widget can share the report types. TypeScript 7 waits until typescript-eslint supports it |
 | HTTP | Hono | Small, typed, built on Web-standard `Request` and `Response`, which makes handlers easy to test |
 | Validation | zod | One schema gives both the runtime check and the TypeScript type |
-| GitHub access | REST API through `fetch`, authenticated as a GitHub App with `@octokit/auth-app` | Creating an issue is one REST call. No `gh` binary in the image |
+| GitHub access | REST API through `fetch`, authenticated as a GitHub App by about 60 lines of `node:crypto` (JWT signing and token caching) | Creating an issue is one REST call. No `gh` binary and no Octokit dependency tree in a service that holds a write token |
 | GitHub identity | One GitHub App, `beacon`, with the issues write permission only, installed on the target repositories | Least privilege, short-lived tokens, issues appear as `beacon[bot]`, nothing tied to a person's account |
 | Client authentication | A public client ID per frontend, checked together with its allowed origins | A browser cannot keep a secret, so the ID chooses the target, and the origin check plus limits bound abuse |
 | Spam control | Origin allowlist, in-memory rate limits, size caps. No CAPTCHA | Spam is a cleanup chore, not an incident |
@@ -101,6 +101,7 @@ Responses:
 | `415` | `unsupported_media_type` | The content type is not `application/json` |
 | `429` | `rate_limited` | A rate limit was hit. Includes a `Retry-After` header in seconds |
 | `502` | `upstream_failed` | GitHub refused or failed, or timed out after 10 seconds. Nothing is retried; the frontend may let the reporter try again |
+| `500` | `internal` | An unexpected error in Beacon itself |
 
 The reference is the issue number, never a URL. Most target repositories are public, but some are
 private, and a link a reporter cannot open is worse than a number.
@@ -152,8 +153,9 @@ Everything a reporter sends is untrusted. It can contain `@mentions` that would 
 HTML, image embeds that act as tracking pixels, and text aimed at AI agents that later read the issue.
 Beacon neutralises all of it before anything reaches GitHub.
 
-**Title:** `<reporter's title>`, after control characters are stripped, whitespace is collapsed and
-every `@` is followed by a zero-width space (so `@someone` cannot notify anyone). The type is shown
+**Title:** `<reporter's title>`, after control and bidirectional-override characters are stripped,
+whitespace is collapsed, and every `@` and `#` is followed by a zero-width space (so `@someone`
+cannot notify anyone and `#12` cannot cross-link to another issue). The type is shown
 by a label, not by a prefix in the title.
 
 **Labels:**
@@ -197,7 +199,8 @@ If a label does not exist in the repository, Beacon creates it once and remember
   backticks in the text, so the text cannot close it early. The trade-off is that the reporter's own
   formatting shows as plain text, which suits a bug report.
 - **Context values go in inline code** for the same reason, with backticks removed from the value.
-- Control characters other than line breaks and tabs are removed from every field.
+- Control characters other than line breaks and tabs, and bidirectional-override characters, are
+  removed from every field.
 
 AI agents that read these issues treat them as untrusted too. Cerebro's `user-feedback` and
 `orchestrator` agents do so for every issue, and skip reporter-facing comments on `via-beacon` issues
@@ -209,8 +212,10 @@ because nobody is there to read them (cerebro PR #544).
   Nothing else.
 - **Installation:** only on the repositories that some configured client points at.
 - **Tokens:** Beacon signs a JWT with the App's private key, looks up the installation for the target
-  repository, and exchanges the JWT for an installation token. `@octokit/auth-app` caches these
-  tokens in memory until shortly before they expire (about an hour). Nothing is written to disk.
+  repository, and exchanges the JWT for an installation token. Installation IDs, tokens and the
+  labels known to exist are cached in memory; a token is renewed five minutes before it expires
+  (tokens last an hour). Nothing is written to disk. A PKCS#1 key, as GitHub issues it, is converted
+  to PKCS#8 at start-up.
 - **Start-up check:** at start-up Beacon verifies that the App is installed on every configured
   repository and logs a warning for each one that is not. It still starts, so one misconfigured
   client does not take down the others. Reports for that client get `502`.
@@ -259,16 +264,20 @@ rmstdope-infra, `fullstack` profile, registered from a bundle kept in this repos
   on port `8080` with health path `/healthz`, deployment source `rmstdope/beacon` workflow `ci.yml` on
   `main`. Not stateful.
 - `deploy/compose.json`: one `web` service using `${WEB_IMAGE}`, user `10001:10001`, `read_only`,
-  `cap_drop: ALL`, `no-new-privileges`, `init`, `mem_limit: 128m`, `pids_limit: 128`, the
-  `beacon-web` alias on the external `rmstdope-proxy` network, `env_file:
-  ["${SECRETS_DIR}/web.env"]`, and a healthcheck using
-  `node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"`
-  (the distroless image has no `wget`).
-- `deploy/route.caddy`: the generated single `reverse_proxy beacon-web:8080`.
+  `init`, `mem_limit: 128m`, `cpus: 0.5`, `pids_limit: 128`, the `beacon-web` alias on the external
+  `rmstdope-proxy` network, `env_file: ["${SECRETS_DIR}/web.env"]`, and a healthcheck using
+  `/nodejs/bin/node -e "fetch('http://127.0.0.1:8080/healthz')..."` (the distroless image has no
+  `wget` or shell). rmstdope-infra's bundle validator does not accept `cap_drop` or `security_opt`,
+  so those are left to the host's defaults.
+- `deploy/route.caddy`: generated with rmstdope-infra's own scaffold, which bundle import requires
+  byte for byte.
+- `deploy/smoke-test.sh`: CI starts the built image read-only as user `10001` with throwaway
+  credentials and checks health, `/release.json` and the revision label.
 
-**Image:** a multi-stage Dockerfile. The build stage installs dependencies and compiles TypeScript. The
-final stage is a distroless Node 24 image with the compiled output, production dependencies and
-`release.json`, labelled `org.opencontainers.image.revision=<sha>`. It runs as user `10001`.
+**Image:** a multi-stage Dockerfile. The build stages (`node:24-trixie-slim`) install dependencies and
+compile TypeScript. The final stage is `gcr.io/distroless/nodejs24-debian13` with the compiled output,
+production dependencies and `release.json`, labelled `org.opencontainers.image.revision=<sha>`. It
+runs as user `10001`. Both base images are pinned by digest.
 
 **CI** (`.github/workflows/ci.yml`):
 
@@ -295,7 +304,7 @@ src/
   rate-limit.ts    # fixed-window in-memory limiter (clock injected)
   client-ip.ts     # rightmost X-Forwarded-For entry
 test/              # Vitest, mirrors src/
-deploy/            # rmstdope-infra bundle: app.json, compose.json, route.caddy
+deploy/            # rmstdope-infra bundle (app.json, compose.json, route.caddy) and smoke-test.sh
 docs/design.md     # this file
 Dockerfile
 .github/workflows/ci.yml
