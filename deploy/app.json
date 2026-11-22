@@ -1,0 +1,17 @@
+{
+  "name": "beacon",
+  "domain": "beacon.rmstdope.eu",
+  "profile": "fullstack",
+  "deployment": {
+    "repository": "rmstdope/beacon",
+    "workflow": "ci.yml",
+    "branch": "main"
+  },
+  "services": {
+    "web": {
+      "repository": "ghcr.io/rmstdope/beacon",
+      "port": 8080,
+      "health_path": "/healthz"
+    }
+  }
+}
