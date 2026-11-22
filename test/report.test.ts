@@ -238,7 +238,7 @@ describe("parseReport: a save game", () => {
   it("checks a 9 MB save string without crashing", () => {
     const data = "A".repeat(9 * 1024 * KiB);
     expect(parseReport({ ...valid, save: { data } })).toMatchObject({ status: 413, message: "save: over 512 KB" });
-    expect(parseReport({ ...valid, save: { data: data + "!" } })).toMatchObject({ status: 400, message: "save: not base64" });
+    expect(parseReport({ ...valid, save: { data: data.slice(1) + "!" } })).toMatchObject({ status: 400, message: "save: not base64" });
   });
 
   it("refuses a save that is not UTF-8 JSON", () => {

@@ -137,7 +137,7 @@ base64, size, JSON, and also before the client and origin check. `field` is `sav
 
 Sizes are binary: 512 KB is 524,288 bytes, 2 MB is 2,097,152 and 9 MB is 9,437,184. Three 2 MB
 screenshots and a 512 KB save, base64-encoded, with every text field at its longest, come to about
-9.1 MB, so the largest valid report fits the body limit.
+8.7 MB (about 9,096,000 bytes), so the largest valid report fits the body limit.
 
 The reference is the issue number, never a URL. Most target repositories are public, but some are
 private, and a link a reporter cannot open is worse than a number.
@@ -194,8 +194,8 @@ Each app builds its own report form; Beacon captures nothing itself.
 
 An app whose state lets a maintainer reproduce a bug may send it as `save`: RetroQuest sends its
 current game state, the JSON it keeps in browser storage. A save is as visible as the issue, like a
-screenshot: public for a public repository. What the app tells the reporter about it is the app's
-own decision.
+screenshot: public for a public repository. Beacon sets no wording for telling the reporter so; that
+is agreed with the app that sends a save.
 
 ### CORS
 
