@@ -34,11 +34,13 @@ const LABEL_STYLE: Record<string, { color: string; description: string }> = {
 /** Installation tokens live an hour; renew this long before they expire. */
 const TOKEN_RENEW_MS = 5 * 60_000;
 
-/**
- * Statuses after which cached installation IDs and tokens may be stale (uninstalled, revoked).
- * Not 403: GitHub also answers 403 for rate limits, and re-authenticating then only adds calls.
- */
+/** Statuses after which the cached installation ID and token may be stale (uninstalled, revoked). */
 const AUTH_FAILURES = new Set([401, 404]);
+
+/** GitHub also answers 403 for rate limits; then re-authenticating would only add calls. */
+function isRateLimit(res: Response): boolean {
+  return res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after");
+}
 
 function base64url(value: string | Buffer): string {
   return Buffer.from(value).toString("base64url");
@@ -163,7 +165,7 @@ export class GitHubAppFiler implements IssueFiler {
       if (created.status !== 422) await this.#expect(created, 201, `creating label ${label}`, repo);
       await discard(created);
     } else if (found.status !== 200) {
-      this.#forget(repo, found.status);
+      this.#forget(repo, found);
       throw new GitHubError(`reading label ${label} answered ${String(found.status)}`, found.status);
     }
     this.#knownLabels.add(key);
@@ -173,14 +175,20 @@ export class GitHubAppFiler implements IssueFiler {
   async #expect(res: Response, status: number, what: string, repo?: RepoRef): Promise<void> {
     if (res.status === status) return;
     await discard(res);
-    if (repo) this.#forget(repo, res.status);
+    if (repo) this.#forget(repo, res);
     throw new GitHubError(`${what} answered ${String(res.status)}`, res.status);
   }
 
-  #forget(repo: RepoRef, status: number): void {
-    if (!AUTH_FAILURES.has(status)) return;
-    this.#installations.delete(repoKey(repo));
-    this.#tokens.delete(repoKey(repo));
+  /**
+   * After 401 or 404, forgets the installation and token. After a 403 that is not a rate limit,
+   * forgets only the token: a token's permissions are fixed when it is issued, so a fresh one
+   * picks up permissions granted since.
+   */
+  #forget(repo: RepoRef, res: Response): void {
+    if (AUTH_FAILURES.has(res.status)) this.#installations.delete(repoKey(repo));
+    if (AUTH_FAILURES.has(res.status) || (res.status === 403 && !isRateLimit(res))) {
+      this.#tokens.delete(repoKey(repo));
+    }
   }
 
   /** Reads a JSON object, bounded by the report's timeout even if the body stalls. */

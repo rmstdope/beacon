@@ -34,11 +34,15 @@ describe("rateLimitKey", () => {
     expect(rateLimitKey("2001:db8:1:2:ffff:ffff:ffff:ffff")).toBe("2001:db8:1:2::/64");
     expect(rateLimitKey("2001:DB8::1")).toBe("2001:db8:0:0::/64");
     expect(rateLimitKey("::1")).toBe("0:0:0:0::/64");
+    expect(rateLimitKey("64:ff9b::203.0.113.7")).toBe("64:ff9b:0:0::/64");
+    expect(rateLimitKey("fe80::1%eth0")).toBe("fe80:0:0:0::/64");
   });
 
   it("treats an IPv4-mapped IPv6 address as IPv4", () => {
     expect(rateLimitKey("::ffff:203.0.113.7")).toBe("203.0.113.7");
     expect(rateLimitKey("::ffff:cb00:7107")).toBe("203.0.113.7");
+    expect(rateLimitKey("0:0:0:0:0:ffff:203.0.113.7")).toBe("203.0.113.7");
+    expect(rateLimitKey("0::FFFF:198.51.100.1")).toBe("198.51.100.1");
   });
 
   it("passes through anything else unchanged", () => {

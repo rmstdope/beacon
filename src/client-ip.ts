@@ -1,4 +1,4 @@
-import { isIPv4, isIPv6 } from "node:net";
+import { isIPv6 } from "node:net";
 
 /**
  * The client's IP address as Caddy saw it.
@@ -16,11 +16,17 @@ export function clientIp(forwardedFor: string | undefined, socketAddress: string
   return entries.at(-1) ?? socketAddress ?? "unknown";
 }
 
-/** Expands an IPv6 address to its eight hextets. */
+/** Expands a valid IPv6 address to its eight hextets, lower case, without leading zeros. */
 function hextets(address: string): string[] {
-  const [head = "", tail = ""] = address.toLowerCase().split("::");
+  let text = address.toLowerCase().replace(/%.*$/, ""); // drop a zone ID
+  // An embedded dotted IPv4 tail (::ffff:1.2.3.4) is two hextets.
+  text = text.replace(/(\d+)\.(\d+)\.(\d+)\.(\d+)$/, (_match, a: string, b: string, c: string, d: string) => {
+    const [w, x, y, z] = [a, b, c, d].map(Number) as [number, number, number, number];
+    return `${((w << 8) | x).toString(16)}:${((y << 8) | z).toString(16)}`;
+  });
+  const [head = "", tail = ""] = text.split("::");
   const left = head === "" ? [] : head.split(":");
-  const right = address.includes("::") ? (tail === "" ? [] : tail.split(":")) : [];
+  const right = text.includes("::") ? (tail === "" ? [] : tail.split(":")) : [];
   const zeros = Array<string>(8 - left.length - right.length).fill("0");
   return [...left, ...zeros, ...right].map((part) => part.replace(/^0+(?=.)/, ""));
 }
@@ -30,12 +36,10 @@ function hextets(address: string): string[] {
  * IPv6 addresses are limited by their /64 rather than one by one.
  */
 export function rateLimitKey(ip: string): string {
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-  if (mapped?.[1] !== undefined && isIPv4(mapped[1])) return mapped[1];
   if (!isIPv6(ip)) return ip;
   const parts = hextets(ip);
-  // An IPv4-mapped address written in hex (::ffff:cb00:7107) is still one IPv4 address.
-  if (parts.slice(0, 5).every((part) => part === "0") && parts[5] === "ffff" && !ip.includes(".")) {
+  // An IPv4-mapped address (::ffff:1.2.3.4, in any notation) is one IPv4 address.
+  if (parts.slice(0, 5).every((part) => part === "0") && parts[5] === "ffff") {
     const [high = 0, low = 0] = parts.slice(6).map((part) => parseInt(part, 16));
     return [high >> 8, high & 255, low >> 8, low & 255].join(".");
   }

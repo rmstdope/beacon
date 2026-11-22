@@ -70,16 +70,17 @@ describe("FixedWindowLimiter", () => {
 
   it("reports the oldest live window's wait when full, even after a key's window was renewed", () => {
     const c = clock();
-    const limiter = new FixedWindowLimiter({ limit: 5, windowMs: 1_000, maxKeys: 2, now: c.now });
-    limiter.hit("a");
-    c.advance(500);
-    limiter.hit("b");
-    c.advance(500);
-    limiter.hit("a"); // a's window renews at 1000; b (started at 500) is now the oldest
-    c.advance(400);
-    expect(limiter.hit("c")).toEqual({ allowed: false, retryAfterSeconds: 1 });
+    const limiter = new FixedWindowLimiter({ limit: 5, windowMs: 10_000, maxKeys: 2, now: c.now });
+    limiter.hit("a"); // a@0
+    c.advance(9_000);
+    limiter.hit("x"); // x@9000
+    c.advance(1_000);
+    limiter.hit("b"); // the periodic prune drops a; b@10000
+    c.advance(9_500);
+    limiter.hit("x"); // x expired but not yet pruned: renewed in place, x@19500
     c.advance(100);
-    expect(limiter.hit("c").allowed).toBe(true);
+    // b, not x, is now the oldest live window: it ends at 20000, 400 ms away.
+    expect(limiter.hit("c")).toEqual({ allowed: false, retryAfterSeconds: 1 });
   });
 });
 

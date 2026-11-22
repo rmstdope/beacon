@@ -225,7 +225,8 @@ because nobody is there to read them (cerebro PR #544).
   Installation IDs, tokens and the labels known to exist are cached in memory; a token is renewed
   five minutes before it expires (tokens last an hour). After a 401 or 404 the cached
   installation and token for that repository are dropped, so a reinstall or revoked token recovers
-  on the next report. Nothing is written to disk. A PKCS#1 key, as GitHub issues it, is converted
+  on the next report. After a 403 that is not a rate limit, only the token is dropped: a token's
+  permissions are fixed when it is issued, so a fresh one picks up permissions granted since. Nothing is written to disk. A PKCS#1 key, as GitHub issues it, is converted
   to PKCS#8 at start-up.
 - **Start-up check:** at start-up Beacon verifies that the App is installed on every configured
   repository and logs a warning for each one that is not. It still starts, so one misconfigured

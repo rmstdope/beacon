@@ -158,7 +158,7 @@ describe("GitHubAppFiler.fileIssue", () => {
     expect(count("/access_tokens")).toBe(2);
   });
 
-  it("forgets the installation after a 404 too, but keeps it after a 403 rate limit", async () => {
+  it("forgets the installation after a 404 too, but keeps it after a 403", async () => {
     for (const [status, lookups] of [[404, 2], [403, 1]] as const) {
       let failing = true;
       const gh = fakeGitHub({
@@ -169,6 +169,27 @@ describe("GitHubAppFiler.fileIssue", () => {
       failing = false;
       await f.fileIssue(repo, issue);
       expect(gh.calls.filter((c) => c.path.endsWith("/installation")).length, String(status)).toBe(lookups);
+    }
+  });
+
+  it("renews only the token after a 403 that is not a rate limit, so new permissions apply", async () => {
+    for (const [headers, tokens] of [
+      [{}, 2],
+      [{ "x-ratelimit-remaining": "0" }, 1],
+      [{ "retry-after": "60" }, 1],
+    ] as const) {
+      let failing = true;
+      const gh = fakeGitHub({
+        "POST /repos/rmstdope/retroquest/issues": () =>
+          failing ? new Response("{}", { status: 403, headers }) : json(201, { number: 1 }),
+      });
+      const f = filer(gh);
+      await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+      failing = false;
+      await f.fileIssue(repo, issue);
+      const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
+      expect(count("/access_tokens"), JSON.stringify(headers)).toBe(tokens);
+      expect(count("/installation"), JSON.stringify(headers)).toBe(1);
     }
   });
 
