@@ -12,11 +12,12 @@ const INVISIBLE = /[\p{Cf}\u00A0\u0000]/u;
 /** Binary formats are skipped by extension, never by content, so a NUL cannot exempt a source file. */
 const BINARY = /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|otf|pdf)$/i;
 
-describe("repository files", () => {
+describe("tracked files", () => {
   it("contain no literal invisible or bidirectional characters; write them as \\u escapes", () => {
-    const paths = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], {
-      encoding: "utf8",
-    })
+    // Tracked files only: exactly what is committed and what CI sees. Stray local files (Finder's
+    // .DS_Store, pack tarballs, symlinks) are not code and must not fail the suite. Run it after
+    // `git add` to check a new file before committing.
+    const paths = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
       .split("\0")
       .filter((path) => path !== "");
     const offenders = paths.filter((path) => {

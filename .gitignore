@@ -2,5 +2,7 @@ node_modules/
 dist/
 coverage/
 *.pem
+*.tgz
+.DS_Store
 .env
 .env.*

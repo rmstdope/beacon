@@ -194,17 +194,25 @@ describe("GitHubAppFiler.fileIssue", () => {
   });
 
   it("applies the same forgetting when reading a label fails", async () => {
-    let failing = true;
-    const gh = fakeGitHub({
-      "GET /repos/rmstdope/retroquest/labels/bug": () => (failing ? json(401, {}) : json(200, {})),
-    });
-    const f = filer(gh);
-    await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
-    failing = false;
-    await f.fileIssue(repo, issue);
-    const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
-    expect(count("/installation")).toBe(2);
-    expect(count("/access_tokens")).toBe(2);
+    for (const [status, headers, lookups, tokens] of [
+      [401, {}, 2, 2],
+      [403, {}, 1, 2],
+      [403, { "retry-after": "60" }, 1, 1],
+    ] as const) {
+      let failing = true;
+      const gh = fakeGitHub({
+        "GET /repos/rmstdope/retroquest/labels/bug": () =>
+          failing ? new Response("{}", { status, headers }) : json(200, {}),
+      });
+      const f = filer(gh);
+      await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+      failing = false;
+      await f.fileIssue(repo, issue);
+      const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
+      const label = `${String(status)} ${JSON.stringify(headers)}`;
+      expect(count("/installation"), label).toBe(lookups);
+      expect(count("/access_tokens"), label).toBe(tokens);
+    }
   });
 
   it("fails with a GitHubError when a success answer is not JSON", async () => {
