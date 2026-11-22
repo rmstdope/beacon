@@ -19,7 +19,8 @@ Non-goals, for now:
 
 - Storage of any kind: no database, no queue, no retries after a failure.
 - Screenshots or other attachments (see *Parked*).
-- A client SDK or a drop-in widget. Frontends call the HTTP API directly.
+- A drop-in widget with its own UI. Frontends call the API through the browser client (below) or
+  directly.
 - CAPTCHA or any other challenge for reporters.
 - Accounts, reporter identity or contact details.
 
@@ -27,7 +28,7 @@ Non-goals, for now:
 
 | Area | Decision | Why |
 |---|---|---|
-| Language and runtime | TypeScript 6.0 on Node 24 LTS | Same runtime as the `control` app. A future SDK or widget can share the report types. TypeScript 7 waits until typescript-eslint supports it |
+| Language and runtime | TypeScript 6.0 on Node 24 LTS | Same runtime as the `control` app. The browser client shares the report types. TypeScript 7 waits until typescript-eslint supports it |
 | HTTP | Hono | Small, typed, built on Web-standard `Request` and `Response`, which makes handlers easy to test |
 | Validation | zod | One schema gives both the runtime check and the TypeScript type |
 | GitHub access | REST API through `fetch`, authenticated as a GitHub App by about 60 lines of `node:crypto` (JWT signing and token caching) | Creating an issue is one REST call. No `gh` binary and no Octokit dependency tree in a service that holds a write token |
@@ -95,7 +96,7 @@ Responses:
 | Status | `error` | When |
 |---|---|---|
 | `201` | — | Filed. Body: `{"reference": <issue number>}` |
-| `400` | `invalid_report` | Malformed JSON or a field breaks the rules. `message` names the field |
+| `400` | `invalid_report` | Malformed JSON or a field breaks the rules. `field` names it: a report field, `body` (malformed JSON) or `unknown_key` |
 | `403` | `forbidden` | Unknown client ID, or the request's `Origin` is not allowed for that client. The two cases are not distinguished |
 | `413` | `too_large` | The body is over 16 KB |
 | `415` | `unsupported_media_type` | The content type is not `application/json` |
@@ -105,6 +106,32 @@ Responses:
 
 The reference is the issue number, never a URL. Most target repositories are public, but some are
 private, and a link a reporter cannot open is worse than a number.
+
+### Browser client
+
+`src/client.ts` files a report with one call and turns every response into a typed result:
+
+```ts
+const beacon = createBeacon({ clientId: "retroquest", appVersion: "1.4.2" });
+const result = await beacon.report({ type: "bug", title, description });
+// { ok: true, reference: 123 } or { ok: false, error: { code, message, ... } }
+```
+
+- **Distribution: copy the file into the frontend.** It has no imports and no dependencies, and it
+  compiles in a browser project as it is. An npm package would need a publishing credential and a
+  release process for one small file. A script Beacon served would have every frontend run code from
+  the service that holds the GitHub write credential, and would lose the types. The cost of copying is
+  drift; the client talks to `/v1/`, so an older copy keeps working.
+- **What it fills in:** `pageUrl` is the page's origin and path, without the query or fragment, which
+  can carry tokens and would be published with the issue. It is left out when the page is not
+  `http(s)` or the result is over 2,048 characters. `userAgent` is the browser's, cut at 512.
+- **Errors:** `code` is the API's `error` (`invalid_report` adds `field`, `rate_limited` adds
+  `retryAfterSeconds` from `Retry-After`, or 60 when that is missing), plus `network` when no response
+  arrived (offline, or the browser refused the cross-origin request) and `unexpected`, with the
+  status, for any response this table does not document. `report` never throws. `message` stays
+  developer text.
+- **Shared types:** the client keeps its own copy of `REPORT_TYPES`, so it stays importless; a test
+  fails if it differs from `src/report.ts`.
 
 ### CORS
 
@@ -313,6 +340,7 @@ src/
   main.ts          # entry point: load config, build dependencies, listen, graceful SIGTERM
   config.ts        # env parsing and validation (zod)
   report.ts        # report schema and types
+  client.ts        # browser client, copied into frontends; no imports
   issue.ts         # report -> sanitized issue title, body, labels (pure)
   github.ts        # GitHub App auth, installation lookup, label creation, issue creation
   rate-limit.ts    # fixed-window in-memory limiter (clock injected)
@@ -346,4 +374,4 @@ Dockerfile
   picked up: a second GitHub App with permission to write repository contents, installed only on a
   private `beacon-attachments` repository. Beacon commits each image there and links it from the
   issue. Capture method (file picker, `getDisplayMedia`, DOM rendering) to be decided at the same time.
-- **Client SDK or drop-in widget.**
+- **Drop-in widget.** A form with its own UI, built on the browser client.
