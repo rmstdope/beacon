@@ -1,6 +1,7 @@
 import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { GitHubAppFiler, GitHubError } from "../src/github.js";
+import { GitHubAppFiler, GitHubError, type ScreenshotFile } from "../src/github.js";
+import type { Issue } from "../src/issue.js";
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const privateKeyPem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
@@ -288,3 +289,200 @@ describe("GitHubAppFiler.isInstalled", () => {
     expect(await filer(gh).isInstalled(repo)).toBe(false);
   });
 });
+
+const REPO_PATH = "/repos/rmstdope/retroquest";
+const REF = `${REPO_PATH}/git/ref/heads/beacon-screenshots`;
+const files: ScreenshotFile[] = [
+  { path: "2026-11-22-7f3a9c/1.png", bytes: new Uint8Array([1, 2, 3]) },
+  { path: "2026-11-22-7f3a9c/2.jpg", bytes: new Uint8Array([4, 5]) },
+];
+
+/** A fake of the Git Data API holding one branch, `head` its tip or undefined while it does not exist. */
+function gitRoutes(start: { head?: string } = { head: "aaa0" }) {
+  const state = { head: start.head, blobs: 0, trees: 0, commits: 0, refConflicts: 0 };
+  const routes: Record<string, Route> = {
+    [`GET ${REF}`]: () => (state.head ? json(200, { object: { sha: state.head } }) : json(404, {})),
+    [`GET ${REPO_PATH}/git/commits/aaa0`]: () => json(200, { sha: "aaa0", tree: { sha: "ddd0" } }),
+    [`GET ${REPO_PATH}/git/commits/bbb0`]: () => json(200, { sha: "bbb0", tree: { sha: "ddd9" } }),
+    [`POST ${REPO_PATH}/git/blobs`]: () => json(201, { sha: `b0b${String(++state.blobs)}` }),
+    [`POST ${REPO_PATH}/git/trees`]: () => json(201, { sha: `eee${String(++state.trees)}` }),
+    [`POST ${REPO_PATH}/git/commits`]: () => json(201, { sha: `c0ffee${String(++state.commits)}` }),
+    [`PATCH ${REPO_PATH}/git/refs/heads/beacon-screenshots`]: (call) => {
+      if (state.refConflicts > 0) {
+        state.refConflicts--;
+        state.head = "bbb0";
+        return json(422, { message: "Update is not a fast forward" });
+      }
+      state.head = (call.body as { sha: string }).sha;
+      return json(200, {});
+    },
+    [`POST ${REPO_PATH}/git/refs`]: (call) => {
+      if (state.head) return json(422, { message: "Reference already exists" });
+      state.head = (call.body as { sha: string }).sha;
+      return json(201, {});
+    },
+  };
+  return { state, routes };
+}
+
+function builder() {
+  const seen: string[][] = [];
+  const build = (urls: string[]): Issue => {
+    seen.push(urls);
+    return { ...issue, body: urls.join("\n") };
+  };
+  return { seen, build };
+}
+
+const gitCalls = (gh: ReturnType<typeof fakeGitHub>) =>
+  gh.calls.filter((c) => c.path.includes("/git/")).map((c) => `${c.method} ${c.path.replace(REPO_PATH, "")}`);
+
+describe("GitHubAppFiler.fileIssue with screenshots", () => {
+  it("commits them on top of the branch, then files the issue showing them by commit-pinned URLs", async () => {
+    const git = gitRoutes();
+    const gh = fakeGitHub(git.routes);
+    const { seen, build } = builder();
+    expect(await filer(gh).fileIssue(repo, build, files)).toBe(17);
+
+    expect(gitCalls(gh)).toEqual([
+      "GET /git/ref/heads/beacon-screenshots",
+      "GET /git/commits/aaa0",
+      "POST /git/blobs",
+      "POST /git/blobs",
+      "POST /git/trees",
+      "POST /git/commits",
+      "PATCH /git/refs/heads/beacon-screenshots",
+    ]);
+    const body = (suffix: string) => gh.calls.find((c) => c.path.endsWith(suffix) && c.method !== "GET")?.body;
+    expect(gh.calls.filter((c) => c.path.endsWith("/git/blobs")).map((c) => c.body)).toEqual([
+      { content: "AQID", encoding: "base64" },
+      { content: "BAU=", encoding: "base64" },
+    ]);
+    expect(body("/git/trees")).toEqual({
+      base_tree: "ddd0",
+      tree: [
+        { path: "2026-11-22-7f3a9c/1.png", mode: "100644", type: "blob", sha: "b0b1" },
+        { path: "2026-11-22-7f3a9c/2.jpg", mode: "100644", type: "blob", sha: "b0b2" },
+      ],
+    });
+    expect(body("/git/commits")).toEqual({
+      message: "Screenshots for a Beacon report [skip ci]",
+      tree: "eee1",
+      parents: ["aaa0"],
+    });
+    expect(body("/git/refs/heads/beacon-screenshots")).toEqual({ sha: "c0ffee1", force: false });
+    expect(git.state.head).toBe("c0ffee1");
+
+    const urls = [
+      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/1.png?raw=true",
+      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/2.jpg?raw=true",
+    ];
+    expect(seen).toEqual([urls]);
+    const created = gh.calls.find((c) => c.method === "POST" && c.path.endsWith("/issues"));
+    expect(created?.body).toEqual({ ...issue, body: urls.join("\n") });
+    const order = gh.calls.map((c) => c.path);
+    expect(order.indexOf(`${REPO_PATH}/git/refs/heads/beacon-screenshots`)).toBeLessThan(order.indexOf(`${REPO_PATH}/issues`));
+  });
+
+  it("starts the branch with a commit of its own when it does not exist yet", async () => {
+    const git = gitRoutes({});
+    const gh = fakeGitHub(git.routes);
+    await filer(gh).fileIssue(repo, builder().build, files);
+    expect(gitCalls(gh)).toEqual([
+      "GET /git/ref/heads/beacon-screenshots",
+      "POST /git/blobs",
+      "POST /git/blobs",
+      "POST /git/trees",
+      "POST /git/commits",
+      "POST /git/refs",
+    ]);
+    const body = (suffix: string) => gh.calls.find((c) => c.method === "POST" && c.path.endsWith(suffix))?.body;
+    expect(body("/git/trees")).not.toHaveProperty("base_tree");
+    expect(body("/git/commits")).toMatchObject({ parents: [] });
+    expect(body("/git/refs")).toEqual({ ref: "refs/heads/beacon-screenshots", sha: "c0ffee1" });
+  });
+
+  it("rebuilds on the new tip when another report moved the branch first, reusing the blobs", async () => {
+    const git = gitRoutes();
+    git.state.refConflicts = 1;
+    const gh = fakeGitHub(git.routes);
+    const { seen, build } = builder();
+    await filer(gh).fileIssue(repo, build, files);
+    expect(gitCalls(gh)).toEqual([
+      "GET /git/ref/heads/beacon-screenshots",
+      "GET /git/commits/aaa0",
+      "POST /git/blobs",
+      "POST /git/blobs",
+      "POST /git/trees",
+      "POST /git/commits",
+      "PATCH /git/refs/heads/beacon-screenshots",
+      "GET /git/ref/heads/beacon-screenshots",
+      "GET /git/commits/bbb0",
+      "POST /git/trees",
+      "POST /git/commits",
+      "PATCH /git/refs/heads/beacon-screenshots",
+    ]);
+    const commits = gh.calls.filter((c) => c.method === "POST" && c.path.endsWith("/git/commits"));
+    expect(commits[1]?.body).toMatchObject({ parents: ["bbb0"], tree: "eee2" });
+    expect(seen[0]?.[0]).toContain("/blob/c0ffee2/");
+  });
+
+  it("gives up after three attempts at moving the branch, filing nothing", async () => {
+    const git = gitRoutes();
+    git.state.refConflicts = 3;
+    const gh = fakeGitHub(git.routes);
+    const { seen, build } = builder();
+    await expect(filer(gh).fileIssue(repo, build, files)).rejects.toThrow(GitHubError);
+    expect(gh.calls.filter((c) => c.method === "PATCH").length).toBe(3);
+    expect(seen).toEqual([]);
+    expect(gh.calls.some((c) => c.path.endsWith("/issues"))).toBe(false);
+  });
+
+  it("files no issue when any step of storing fails", async () => {
+    for (const step of [
+      `GET ${REF}`,
+      `GET ${REPO_PATH}/git/commits/aaa0`,
+      `POST ${REPO_PATH}/git/blobs`,
+      `POST ${REPO_PATH}/git/trees`,
+      `POST ${REPO_PATH}/git/commits`,
+      `PATCH ${REPO_PATH}/git/refs/heads/beacon-screenshots`,
+    ]) {
+      const git = gitRoutes();
+      const gh = fakeGitHub({ ...git.routes, [step]: () => json(500, {}) });
+      await expect(filer(gh).fileIssue(repo, builder().build, files), step).rejects.toThrow(GitHubError);
+      expect(gh.calls.some((c) => c.path.endsWith("/issues")), step).toBe(false);
+    }
+  });
+
+  it("files no issue when a storing answer lacks the sha it needs", async () => {
+    const git = gitRoutes();
+    const gh = fakeGitHub({ ...git.routes, [`POST ${REPO_PATH}/git/commits`]: () => json(201, {}) });
+    await expect(filer(gh).fileIssue(repo, builder().build, files)).rejects.toThrow(GitHubError);
+    expect(gh.calls.some((c) => c.path.endsWith("/issues"))).toBe(false);
+  });
+
+  it("touches no git data without screenshots, and gives the builder no URLs", async () => {
+    const gh = fakeGitHub(gitRoutes().routes);
+    const { seen, build } = builder();
+    await filer(gh).fileIssue(repo, build, []);
+    expect(gitCalls(gh)).toEqual([]);
+    expect(seen).toEqual([[]]);
+  });
+
+  it("shares the report's one timeout between storing and filing", async () => {
+    const gh = fakeGitHub(gitRoutes().routes);
+    // Storing takes about 140 ms and the issue 100 ms: each fits in 200 ms alone, not together.
+    const delayed = async (input: string | URL | Request, init?: RequestInit) => {
+      const path = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url).pathname;
+      const delay = path.includes("/git/") ? 20 : path.endsWith("/issues") ? 100 : 0;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      init?.signal?.throwIfAborted();
+      return gh.fetch(input, init);
+    };
+    const f = new GitHubAppFiler({ appId: "1", privateKeyPem, fetch: delayed, timeoutMs: 200 });
+    await expect(f.fileIssue(repo, builder().build, files)).rejects.toThrow(GitHubError);
+    expect(gh.calls.some((c) => c.path.endsWith("/git/refs/heads/beacon-screenshots"))).toBe(true);
+    expect(gh.calls.some((c) => c.path.endsWith("/issues"))).toBe(false);
+  });
+});
+
