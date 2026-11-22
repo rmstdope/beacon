@@ -25,3 +25,14 @@ export function png(...extra: Uint8Array[]): Uint8Array {
   const idat = pngChunk("IDAT", deflateSync(Buffer.from([0, 255, 0, 0])));
   return bytes(PNG_SIGNATURE, ihdr, ...extra, idat, pngChunk("IEND"));
 }
+
+/** The smallest JPEG structure cleanImage accepts: SOI, a scan header, scan data, EOI. */
+export function tinyJpeg(): Uint8Array {
+  return bytes([0xff, 0xd8, 0xff, 0xda, 0, 8, 1, 1, 0, 0, 63, 0, 0x12, 0x34, 0xff, 0xd9]);
+}
+
+/** A simple (VP8) WebP with no metadata. */
+export function tinyWebp(): Uint8Array {
+  const vp8 = bytes("VP8 ", u32le(10), [0x30, 0x01, 0x00, 0x9d, 0x01, 0x2a, 1, 0, 1, 0]);
+  return bytes("RIFF", u32le(4 + vp8.length), "WEBP", vp8);
+}

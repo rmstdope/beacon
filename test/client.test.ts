@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import * as client from "../src/client.js";
 import { createBeacon, type BeaconOptions, type ReportResult } from "../src/client.js";
-import type { Client, RepoRef } from "../src/config.js";
-import { GitHubError, type IssueFiler } from "../src/github.js";
-import type { Issue } from "../src/issue.js";
+import type { Client } from "../src/config.js";
+import { GitHubError } from "../src/github.js";
+import { FakeFiler } from "./fake-filer.js";
 import { FixedWindowLimiter } from "../src/rate-limit.js";
 import * as server from "../src/report.js";
 import { createApp, type AppOptions } from "../src/server.js";
@@ -15,19 +15,6 @@ const ENDPOINT = "https://beacon.test";
 const clients = new Map<string, Client>([
   ["retroquest", { repo: { owner: "rmstdope", name: "retroquest" }, origins: [RQ] }],
 ]);
-
-class FakeFiler implements IssueFiler {
-  filed: { repo: RepoRef; issue: Issue }[] = [];
-  failWith: Error | undefined;
-  fileIssue(repo: RepoRef, issue: Issue): Promise<number> {
-    if (this.failWith) return Promise.reject(this.failWith);
-    this.filed.push({ repo, issue });
-    return Promise.resolve(100 + this.filed.length);
-  }
-  isInstalled(): Promise<boolean> {
-    return Promise.resolve(true);
-  }
-}
 
 function urlOf(input: Parameters<typeof fetch>[0]): string {
   return input instanceof Request ? input.url : input.toString();
@@ -153,7 +140,7 @@ describe("Beacon client, against the real app", () => {
 
   it("reports an oversized body as too_large", async () => {
     const { beacon } = setup();
-    expect(errorOf(await beacon.report({ ...bug, description: "x".repeat(20_000) })).code).toBe("too_large");
+    expect(errorOf(await beacon.report({ ...bug, description: "x".repeat(9 * 1024 * 1024) })).code).toBe("too_large");
   });
 
   it("reports a rate limit as rate_limited with the seconds to wait", async () => {

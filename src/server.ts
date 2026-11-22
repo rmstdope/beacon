@@ -1,11 +1,13 @@
+import { randomBytes } from "node:crypto";
 import type { HttpBindings } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { clientIp, rateLimitKey } from "./client-ip.js";
 import type { Client } from "./config.js";
-import { GitHubError, type IssueFiler } from "./github.js";
+import { GitHubError, type IssueFiler, type ScreenshotFile } from "./github.js";
 import { buildIssue } from "./issue.js";
 import type { FixedWindowLimiter } from "./rate-limit.js";
+import type { CleanImage, ImageType } from "./image.js";
 import { parseReport } from "./report.js";
 
 export type LogEntry = { event: string } & Record<string, string | number | boolean>;
@@ -20,12 +22,26 @@ export interface AppOptions {
   /** Receives one entry per request outcome. Never given report text or client IPs. */
   log?: (entry: LogEntry) => void;
   now?: () => number;
+  /** Six lowercase hex digits naming a report's screenshot folder; random by default. */
+  randomHex?: () => string;
 }
 
-const MAX_BODY_BYTES = 16 * 1024;
+/** Three 2 MiB screenshots, base64-encoded, plus the text. */
+const MAX_BODY_BYTES = 9 * 1024 * 1024;
 const MAX_USER_AGENT = 512;
 
 type Env = { Bindings: Partial<HttpBindings> };
+
+const EXTENSIONS: Record<ImageType, string> = { png: "png", jpeg: "jpg", webp: "webp" };
+
+/** `YYYY-MM-DD-<6 hex>/<N>.<ext>`, N counting from 1 in the order sent. */
+function screenshotFiles(images: readonly CleanImage[], now: number, code: string): ScreenshotFile[] {
+  const folder = `${new Date(now).toISOString().slice(0, 10)}-${code}`;
+  return images.map((image, index) => ({
+    path: `${folder}/${String(index + 1)}.${EXTENSIONS[image.type]}`,
+    bytes: image.bytes,
+  }));
+}
 
 function fail(
   c: Context,
@@ -41,6 +57,7 @@ export function createApp(options: AppOptions): Hono<Env> {
   const { clients, filer, ipLimiter, clientLimiter, revision } = options;
   const log = options.log ?? (() => undefined);
   const now = options.now ?? Date.now;
+  const randomHex = options.randomHex ?? (() => randomBytes(3).toString("hex"));
   const allOrigins = new Set([...clients.values()].flatMap((client) => client.origins));
 
   const app = new Hono<Env>();
@@ -90,7 +107,7 @@ export function createApp(options: AppOptions): Hono<Env> {
       maxSize: MAX_BODY_BYTES,
       onError: (c) => {
         log({ event: "report.rejected", status: 413 });
-        return fail(c, 413, "too_large", `body is over ${String(MAX_BODY_BYTES / 1024)} KB`);
+        return fail(c, 413, "too_large", `body is over ${String(MAX_BODY_BYTES / 1024 / 1024)} MB`);
       },
     }),
     async (c) => {
@@ -103,8 +120,8 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
       const parsed = parseReport(input);
       if (!parsed.ok) {
-        log({ event: "report.rejected", status: 400, field: parsed.field });
-        return fail(c, 400, "invalid_report", parsed.message, { field: parsed.field });
+        log({ event: "report.rejected", status: parsed.status, field: parsed.field });
+        return fail(c, parsed.status, parsed.error, parsed.message, { field: parsed.field });
       }
       const report = parsed.report;
 
@@ -138,12 +155,15 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
 
       const started = now();
+      const images = report.screenshots ?? [];
+      const files = images.length > 0 ? screenshotFiles(images, started, randomHex()) : [];
       try {
-        const reference = await filer.fileIssue(client.repo, buildIssue(report));
+        const reference = await filer.fileIssue(client.repo, (urls) => buildIssue(report, urls), files);
         log({
           event: "report.filed",
           client: report.clientId,
           type: report.type,
+          screenshots: files.length,
           issue: reference,
           githubMs: now() - started,
         });
