@@ -326,11 +326,12 @@ app's own repository and shows them from there.
   maintainer removes them by hand.
 - **Hidden details are removed** before anything is stored, without re-encoding the picture. PNG
   keeps only the critical chunks and those the picture depends on (colour, transparency, pixel
-  density, animation), dropping text, EXIF, time and private chunks. JPEG keeps the JFIF header (without any embedded thumbnail), ICC colour
-  profiles, the Adobe colour marker and the image segments, dropping EXIF, XMP, comments, other
-  application segments and anything after the end marker; a non-default EXIF orientation is kept as
-  an EXIF segment holding only that tag, so a phone photo is not shown rotated. WebP drops its EXIF,
-  XMP and unknown chunks. Anything malformed is refused as not an image.
+  density, animation), dropping text, EXIF, time and private chunks. JPEG keeps the JFIF header
+  (without any embedded thumbnail), ICC colour profiles, the Adobe colour marker and the image
+  segments, dropping EXIF, XMP, comments, other application segments and anything after the end
+  marker; a non-default EXIF orientation is kept as an EXIF segment holding only that tag, so a
+  phone photo is not shown rotated. WebP drops its EXIF, XMP and unknown chunks. Anything malformed
+  is refused as not an image.
 - **Memory:** a 9 MB report briefly holds several copies of its body, and its body is parsed before
   the rate limits can be checked (they need the client ID inside it). So at most **three requests
   with a body over 16 KB** (or of unknown length) are read and handled at once; the rest wait for a
