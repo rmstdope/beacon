@@ -12,8 +12,9 @@ got `RangeError: Maximum call stack size exceeded`. The check runs before the si
 crash escaped as `500 internal` where the agreed answer was `413 too_large`. The cut-off is about
 4.47M characters, well inside the new 9 MB body limit.
 
-**Why.** V8's regex engine recurses once per repetition of a quantified group, so its stack depth
-grows with the input length. A flat character class with a quantifier (`[A-Za-z0-9+/]*`) does not.
+**Why.** Observed, not explained: the grouped pattern overflows V8's regex stack once the input
+passes about 4.47M characters, and the flat class `[A-Za-z0-9+/]*` does not at 9M. The mechanism
+inside the engine was not established.
 
 **Cost.** One review round: a fix commit, a new test, and a focused re-review.
 
@@ -36,7 +37,7 @@ final design adds one slot per address and a 60 s deadline for the body once a s
 (`408 request_timeout`).
 
 **Why.** The plan measured memory for honest concurrency only. It did not ask which limits run
-before the body is read, once the body is 560 times larger. The first fix then bounded memory
+before the body is read, once the body is 576 times larger. The first fix then bounded memory
 without asking how long a slot could be held.
 
 **Cost.** Three extra review rounds, four fix commits, a new status outside the agreed refusal
