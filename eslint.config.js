@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   // .cerebro/ is the cerebro harness (a submodule) and the links into it; it is not Beacon code.
-  { ignores: ["dist/", "node_modules/", ".cerebro/", ".claude/", ".github/", ".beads/"] },
+  { ignores: ["dist/", "node_modules/", ".cerebro/", ".claude/", ".github/agents/", ".github/hooks/", ".github/skills/"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {

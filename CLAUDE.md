@@ -20,7 +20,10 @@ Nothing merges red. **Every change is reviewed by an independent sub-agent befor
 including follow-up commits that only answer earlier findings or fix nits**: before any merge,
 check that the latest commit has been reviewed, not just the earlier ones. A producer obtains one
 full review of the complete diff and bead, addresses every finding, and gets each fix commit
-reviewed in turn (a focused review of that commit is enough). Unresolved findings, a red or missing
+reviewed in turn (a focused review of that commit is enough). This is stricter than cerebro's
+skills and replaces them where they differ: `produce-bead`'s "a small answer to a finding needs
+none" does not apply here, and neither does Cerebro's merge of a green Dependabot pull request
+without a review; such a pull request gets a sub-agent review like any change. Unresolved findings, a red or missing
 check, or a reviewer that cannot produce a usable result go to the navigator. This repository
 declares no `navigator_gates`.
 
@@ -34,7 +37,9 @@ in another.
 
 The board syncs through the Dolt remote (the repository's `origin`), not git. A fresh clone runs
 `bd bootstrap` (which refuses if a database already exists, so do not run `bd list` first); after
-that it is `bd dolt pull` and `bd dolt push`.
+that it is `bd dolt pull` and `bd dolt push`. `bd init` set `core.hooksPath` to `.beads/hooks` in
+this clone only; in a fresh clone, run `bd hooks install` after `bd bootstrap` so commits, pushes
+and checkouts run the bead hooks.
 
 ## Development practices
 
@@ -55,7 +60,7 @@ that it is `bd dolt pull` and `bd dolt push`.
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm run lint && pnpm run typecheck && pnpm test   # the fast gate, what CI's checks job runs
+pnpm run lint && pnpm run typecheck && pnpm test   # the fast gate; CI's checks job adds the build
 pnpm run build                                     # compiles to dist/
 pnpm exec vitest run test/github.test.ts           # one file
 ```
@@ -71,8 +76,8 @@ Beacon is deployed by rmstdope-infra (`../rmstdope-infra`) as a `fullstack` app 
 - `deploy/compose.json` may use only the service fields infra's bundle validator accepts
   (`image`, `restart`, `init`, `healthcheck`, `logging`, `env_file`, `environment`, `user`,
   `read_only`, `volumes`, `mem_limit`, `cpus`, `pids_limit`, `networks`, `depends_on`): no
-  `cap_drop`, `security_opt` or `stop_grace_period`. `env_file` must be exactly
-  `${SECRETS_DIR}/web.env`.
+  `cap_drop`, `security_opt` or `stop_grace_period`. Infra accepts any `${SECRETS_DIR}/<name>.env`;
+  by our convention Beacon uses exactly one, `${SECRETS_DIR}/web.env`.
 - `deploy/route.caddy` must equal infra's generated route byte for byte; regenerate it with
   `config.scaffold(app)[1]` from rmstdope-infra rather than editing it.
 - Validate a bundle change with infra's own `validate_app` and `validate_routed_bundle` before
