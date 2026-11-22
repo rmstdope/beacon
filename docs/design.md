@@ -4,7 +4,8 @@ Beacon is a small HTTP service at `https://beacon.rmstdope.eu`. Browser frontend
 rmstdope applications send it bug reports, enhancement suggestions and feature requests. Beacon
 files each one as a GitHub issue in the application's own repository, and answers with the issue
 number as a reference. It stores nothing of its own: every report is relayed to GitHub or rejected,
-and a report's screenshots are kept in the application's repository (see *Screenshots*).
+and a report's screenshots and save game are kept in the application's repository (see
+*Screenshots*).
 
 ## Goals and non-goals
 
@@ -19,7 +20,7 @@ Goals:
 Non-goals, for now:
 
 - Storage of its own: no database, no queue, no retries after a failure.
-- Attachments other than screenshots (no video, no other files).
+- Attachments other than screenshots and a save game (no video, no other files).
 - A drop-in widget with its own UI. Frontends call the API through the browser client (below) or
   directly.
 - CAPTCHA or any other challenge for reporters.
@@ -33,7 +34,7 @@ Non-goals, for now:
 | HTTP | Hono | Small, typed, built on Web-standard `Request` and `Response`, which makes handlers easy to test |
 | Validation | zod | One schema gives both the runtime check and the TypeScript type |
 | GitHub access | REST API through `fetch`, authenticated as a GitHub App by about 60 lines of `node:crypto` (JWT signing and token caching) | Creating an issue is one REST call. No `gh` binary and no Octokit dependency tree in a service that holds a write token |
-| GitHub identity | One GitHub App, `rmstdope-beacon`, with issues and contents write, installed on the target repositories | Short-lived tokens, issues appear as `rmstdope-beacon[bot]`, nothing tied to a person's account. Contents write is for screenshots (below) |
+| GitHub identity | One GitHub App, `rmstdope-beacon`, with issues and contents write, installed on the target repositories | Short-lived tokens, issues appear as `rmstdope-beacon[bot]`, nothing tied to a person's account. Contents write is for screenshots and saves (below) |
 | Client authentication | A public client ID per frontend, checked together with its allowed origins | A browser cannot keep a secret, so the ID chooses the target, and the origin check plus limits bound abuse |
 | Spam control | Origin allowlist, in-memory rate limits, size caps. No CAPTCHA | Spam is a cleanup chore, not an incident |
 | Configuration | Environment variables from the protected settings file | Matches rmstdope-infra. Adding a client is an edit and a restart |
@@ -51,9 +52,9 @@ sequenceDiagram
     FE->>Caddy: POST /v1/reports (Origin, client ID, report)
     Caddy->>B: proxied, X-Forwarded-For set
     B->>B: CORS and origin check, body size, schema, rate limits
-    B->>B: Check, decode and clean any screenshots
+    B->>B: Check, decode and clean any screenshots; check any save
     B->>GH: Installation token (cached in memory)
-    B->>GH: Commit screenshots to beacon-screenshots (only when there are some)
+    B->>GH: Commit screenshots and save to beacon-screenshots (only when there are some)
     B->>B: Build sanitized issue title and body
     B->>GH: POST /repos/{owner}/{repo}/issues
     GH-->>B: 201, issue number
@@ -78,7 +79,8 @@ Request body:
   "pageUrl": "https://retroquest.rmstdope.eu/play/3",
   "appVersion": "1.4.2",
   "userAgent": "Mozilla/5.0 ...",
-  "screenshots": [{ "data": "iVBORw0KGgoAAAANSUhEUgAA..." }]
+  "screenshots": [{ "data": "iVBORw0KGgoAAAANSUhEUgAA..." }],
+  "save": { "data": "eyAidiI6IDEsICJvYmplY3RzIjogWy4uLl0gfQ==" }
 }
 ```
 
@@ -92,6 +94,7 @@ Request body:
 | `appVersion` | Optional. Up to 64 characters |
 | `userAgent` | Optional. Up to 512 characters. If absent, Beacon uses the request's `User-Agent` header |
 | `screenshots` | Optional. Up to 3 objects `{"data": "<base64>"}`, counted from 1 in the order sent. Each is standard padded base64 (no `data:` prefix) of a PNG, JPEG or WebP image of at most 2 MB, judged by its contents, not a name or type. An empty list is the same as none |
+| `save` | Optional. One object `{"data": "<base64>"}`: the app's save game, standard padded base64 of at most 512 KB of UTF-8 JSON. Beacon reads nothing of its format and stores the bytes exactly as sent. Only RetroQuest sends one today |
 
 Unknown fields are rejected. There is no contact field, on purpose: in a public repository it would
 be published.
@@ -104,8 +107,8 @@ Responses:
 | `400` | `invalid_report` | Malformed JSON or a field breaks the rules. `field` names it: a report field, `body` (malformed JSON) or `unknown_key` |
 | `403` | `forbidden` | Unknown client ID, or the request's `Origin` is not allowed for that client. The two cases are not distinguished |
 | `408` | `request_timeout` | A body over 16 KB took more than 60 seconds to arrive once Beacon started reading it (see *Screenshots*, memory). The connection is closed |
-| `413` | `too_large` | The body is over 9 MB, or a screenshot is over 2 MB |
-| `415` | `unsupported_media_type` | The content type is not `application/json`, or a screenshot is not a PNG, JPEG or WebP image |
+| `413` | `too_large` | The body is over 9 MB, a screenshot is over 2 MB, or the save is over 512 KB |
+| `415` | `unsupported_media_type` | The content type is not `application/json`, a screenshot is not a PNG, JPEG or WebP image, or the save is not UTF-8 JSON |
 | `429` | `rate_limited` | A rate limit was hit. Includes a `Retry-After` header in seconds |
 | `502` | `upstream_failed` | GitHub refused or failed, or all of this report's calls to GitHub took more than 8 seconds together. Nothing is retried; the frontend may let the reporter try again |
 | `500` | `internal` | An unexpected error in Beacon itself |
@@ -123,7 +126,18 @@ All of them come before the client and origin check and the rate limits, like ev
 | `415` | `unsupported_media_type` | screenshot N not PNG/JPEG/WebP | `screenshots[N]: not a PNG, JPEG or WebP image` |
 | `413` | `too_large` | the whole request over the limit | `body is over 9 MB` |
 
-Sizes are binary: 2 MB is 2,097,152 bytes and 9 MB is 9,437,184.
+A refused save likewise refuses the whole report. It is checked after the screenshots, in the order
+base64, size, JSON, and also before the client and origin check. `field` is `save`:
+
+| Status | `error` | When | `message` |
+|---|---|---|---|
+| `400` | `invalid_report` | the save is not base64 | `save: not base64` |
+| `413` | `too_large` | the save is over 512 KB (decoded) | `save: over 512 KB` |
+| `415` | `unsupported_media_type` | the save is not UTF-8 JSON | `save: not JSON` |
+
+Sizes are binary: 512 KB is 524,288 bytes, 2 MB is 2,097,152 and 9 MB is 9,437,184. Three 2 MB
+screenshots and a 512 KB save, base64-encoded, with every text field at its longest, come to about
+9.1 MB, so the largest valid report fits the body limit.
 
 The reference is the issue number, never a URL. Most target repositories are public, but some are
 private, and a link a reporter cannot open is worse than a number.
@@ -155,6 +169,9 @@ const result = await beacon.report({ type: "bug", title, description });
   file input or a pasted image is one) and sends them base64-encoded. It checks no limits; Beacon's
   answer does. A Blob the browser cannot read gives `invalid_report` with field `screenshots` and
   `screenshots[N]: could not be read`, and nothing is sent.
+- **Save:** `report({ ..., save })` takes the save's text (sent as UTF-8) or a `Blob`, and sends it
+  base64-encoded. A Blob the browser cannot read gives `invalid_report` with field `save` and
+  `save: could not be read`, and nothing is sent.
 - **Shared types:** the client keeps its own copy of `REPORT_TYPES`, so it stays importless; a test
   fails if it differs from `src/report.ts`.
 
@@ -172,6 +189,13 @@ Each app builds its own report form; Beacon captures nothing itself.
   Screenshots are as visible as the issue: public for a public repository, private for a private
   one.
 - Allow up to 3, each up to 2 MB, PNG, JPEG or WebP.
+
+### Sending a save game
+
+An app whose state lets a maintainer reproduce a bug may send it as `save`: RetroQuest sends its
+current game state, the JSON it keeps in browser storage. A save is as visible as the issue, like a
+screenshot: public for a public repository. What the app tells the reporter about it is the app's
+own decision.
 
 ### CORS
 
@@ -269,6 +293,10 @@ Screenshot 1 of 2
 
 Screenshot 2 of 2
 
+### Save game
+
+[save.json](https://github.com/rmstdope/retroquest/blob/<commit>/2026-11-22-7f3a9c/save.json) (49 KB), the game's state sent with this report. Like the text above, it comes from the user and has not been verified.
+
 ### Context
 
 | | |
@@ -292,6 +320,10 @@ Screenshot 2 of 2
   `Screenshot N of M` under each. Each is a markdown image, so GitHub shows it at its own size up to
   the column width, scales it down on narrow screens, and opens it full size on a click. The alt
   text, captions and addresses are Beacon's; nothing the reporter wrote is in them.
+- **The save game section** follows, only when there is a save. It links the save's page on
+  GitHub, which shows the JSON and has a download button, and gives its size in KB (1,024 bytes,
+  rounded up). The file name, size and address are Beacon's; the save's contents never appear in
+  the issue. The note at the top is unchanged; the section carries its own caution.
 - **Unsafe characters are removed from every field before its length is checked**: control
   characters (C0 and C1) other than line breaks and tabs, and all Unicode format characters,
   including bidirectional overrides, zero-width characters and the tag block. Tag characters are
@@ -306,27 +338,32 @@ because nobody is there to read them (cerebro PR #544).
 
 ## Screenshots
 
-GitHub's API cannot attach a file to an issue, so Beacon commits each report's screenshots to the
-app's own repository and shows them from there.
+GitHub's API cannot attach a file to an issue, so Beacon commits each report's screenshots and save
+game to the app's own repository and shows or links them from there. The branch keeps its name,
+`beacon-screenshots`, though it holds saves too: renaming it would strand the folders already on it.
 
 - **Where:** a branch named `beacon-screenshots` that is never merged. It starts with a commit of its
   own, sharing no history with the default branch, so the default branch, its history, checks and
   releases are never touched. One folder per report, `YYYY-MM-DD-<6 lowercase hex>` (UTC date and a
-  random code), holding `1.png`, `2.jpg`, `3.webp`, … by image type.
+  random code), holding `1.png`, `2.jpg`, `3.webp`, … by image type, and `save.json` when the report
+  carried a save.
 - **How:** one commit per report through the Git Data API: read the branch tip, create a blob per
-  screenshot, a tree on top of the tip's tree, a commit, and move the branch with `force: false`
+  file, a tree on top of the tip's tree, a commit, and move the branch with `force: false`
   (or create it). When another report moved the branch first, Beacon builds again on the new tip,
   reusing the blobs, up to three attempts. The commit message is
-  `Screenshots for a Beacon report [skip ci]`, so the app's GitHub Actions do not run for it.
-- **Addresses:** `https://github.com/<owner>/<repo>/blob/<commit>/<path>?raw=true`, pinned to that
-  commit so a later change to the branch cannot change what an issue shows. A github.com address,
+  `Files for a Beacon report [skip ci]`, so the app's GitHub Actions do not run for it.
+- **Addresses:** `https://github.com/<owner>/<repo>/blob/<commit>/<path>`, pinned to that commit so a
+  later change to the branch cannot change what an issue shows; a screenshot is embedded with
+  `?raw=true` added, so the address serves the image itself. A github.com address,
   so a private repository's screenshots load only for people signed in with access to it.
-- **All or nothing:** screenshots are stored first and the issue filed after, under the report's one
+- **All or nothing:** screenshots and the save are stored first and the issue filed after, under the report's one
   8 s timeout. If storing fails, no issue is filed (`502`). If filing fails after storing, the
   folder stays on the branch, linked from nowhere: an occasional tidy-up chore. So are the folders
   of issues later deleted or closed as spam: they stay on the branch, and in its history, until a
   maintainer removes them by hand.
-- **Hidden details are removed** before anything is stored, without re-encoding the picture. PNG
+- **A save is stored exactly as sent**, unsafe characters and all: the maintainer must load the very
+  state the reporter had. It is a file, never rendered into the issue.
+- **Hidden details are removed** from screenshots before anything is stored, without re-encoding the picture. PNG
   keeps only the critical chunks and those the picture depends on (colour, transparency, pixel
   density, animation), dropping text, EXIF, time and private chunks. JPEG keeps the JFIF header
   (without any embedded thumbnail), ICC colour profiles, the Adobe colour marker and the image
@@ -354,7 +391,7 @@ app's own repository and shows them from there.
 ## GitHub App
 
 - **Permissions:** Issues: read and write (this includes labels). Contents: read and write, for the
-  `beacon-screenshots` branch. Metadata: read (always granted). Nothing else. Contents write could
+  `beacon-screenshots` branch (screenshots and saves). Metadata: read (always granted). Nothing else. Contents write could
   also push to an app's default branch, so protect each target repository's default branch with a
   ruleset the App cannot bypass.
 - **Installation:** only on the repositories that some configured client points at.
@@ -403,7 +440,8 @@ restart Beacon.
 ## Logging
 
 One JSON object per line on stdout: time, level, event, client ID, type, outcome, issue number and
-GitHub latency. **Beacon never logs report text, client IPs or the private key.** Rate-limit
+GitHub latency, and for a filed report how many screenshots it had and whether it had a save.
+**Beacon never logs report text, save contents, client IPs or the private key.** Rate-limit
 rejections are logged with the client ID and which limit was hit. Docker rotates the logs (rmstdope-infra
 default: 3 × 10 MB).
 
@@ -453,7 +491,7 @@ src/
   client.ts        # browser client, copied into frontends; no imports
   issue.ts         # report -> sanitized issue title, body, labels (pure)
   image.ts         # recognises PNG, JPEG, WebP by contents and strips their metadata (pure)
-  github.ts        # GitHub App auth, installation lookup, label creation, screenshot commits, issue creation
+  github.ts        # GitHub App auth, installation lookup, label creation, report file commits, issue creation
   rate-limit.ts    # fixed-window in-memory limiter (clock injected)
   client-ip.ts     # rightmost X-Forwarded-For entry; IPv6 rate-limit keys by /64
   text.ts          # strips control and format characters
