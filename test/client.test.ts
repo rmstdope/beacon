@@ -5,6 +5,7 @@ import { createBeacon, type BeaconOptions, type ReportResult } from "../src/clie
 import type { Client } from "../src/config.js";
 import { GitHubError } from "../src/github.js";
 import { FakeFiler } from "./fake-filer.js";
+import { png, tinyJpeg } from "./images.js";
 import { FixedWindowLimiter } from "../src/rate-limit.js";
 import * as server from "../src/report.js";
 import { createApp, type AppOptions } from "../src/server.js";
@@ -125,6 +126,42 @@ describe("Beacon client, against the real app", () => {
     const { beacon, requests } = setup();
     expect((await beacon.report(bug)).ok).toBe(true);
     expect(requests[0]?.body.userAgent).toBe("U".repeat(512));
+  });
+
+  it("sends screenshots as base64, in order, and the app files them", async () => {
+    const { beacon, filer, requests } = setup();
+    const file = new Blob([png()], { type: "image/png" });
+    expect((await beacon.report({ ...bug, screenshots: [file, new Blob([tinyJpeg()])] })).ok).toBe(true);
+    expect(requests[0]?.body.screenshots).toEqual([
+      { data: Buffer.from(png()).toString("base64") },
+      { data: Buffer.from(tinyJpeg()).toString("base64") },
+    ]);
+    expect(filer.filed[0]?.screenshots.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
+  });
+
+  it("encodes every byte value of a large screenshot exactly", async () => {
+    const { beacon, requests } = setup();
+    const large = new Uint8Array(300_000).map((_, i) => i % 256);
+    await beacon.report({ ...bug, screenshots: [new Blob([large])] });
+    const sent = requests[0]?.body.screenshots as { data: string }[];
+    expect(Buffer.from(sent[0]?.data ?? "", "base64")).toEqual(Buffer.from(large));
+  });
+
+  it("reports a screenshot that cannot be read as invalid_report, sending nothing", async () => {
+    const { beacon, requests } = setup();
+    const unreadable = new Blob([png()]);
+    unreadable.arrayBuffer = () => Promise.reject(new DOMException("gone", "NotReadableError"));
+    const result = await beacon.report({ ...bug, screenshots: [new Blob([png()]), unreadable] });
+    expect(errorOf(result)).toEqual({ code: "invalid_report", field: "screenshots", message: "screenshots[2]: could not be read" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends no screenshots field when there are none", async () => {
+    const { beacon, requests } = setup();
+    await beacon.report(bug);
+    await beacon.report({ ...bug, screenshots: [] });
+    expect(requests[0]?.body).not.toHaveProperty("screenshots");
+    expect(requests[1]?.body).not.toHaveProperty("screenshots");
   });
 
   it("reports an invalid report as invalid_report naming the field", async () => {
