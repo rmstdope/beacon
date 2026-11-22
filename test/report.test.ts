@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseReport } from "../src/report.js";
+import { bytes, png, pngChunk } from "./images.js";
 
 const valid = {
   clientId: "retroquest",
@@ -109,5 +110,81 @@ describe("parseReport", () => {
     expect(errorField(null)).toBe("body");
     expect(errorField([valid])).toBe("body");
     expect(errorField("report")).toBe("body");
+  });
+});
+
+const shot = (image: Uint8Array = png()) => ({ data: Buffer.from(image).toString("base64") });
+const MiB = 1024 * 1024;
+
+/** A PNG of exactly `size` bytes: padding goes in a private chunk, which cleaning drops. */
+function pngOfSize(size: number): Uint8Array {
+  const base = png();
+  return png(pngChunk("prVt", new Uint8Array(size - base.length - 12)));
+}
+
+describe("parseReport: screenshots", () => {
+  it("leaves screenshots out when none are sent, or the list is empty", () => {
+    expect(parseReport(valid)).toEqual({ ok: true, report: valid });
+    expect(parseReport({ ...valid, screenshots: [] })).toEqual({ ok: true, report: valid });
+  });
+
+  it("decodes each screenshot, in order, into a clean image", () => {
+    const withText = png(pngChunk("tEXt", "GPS\0home"));
+    const result = parseReport({ ...valid, screenshots: [shot(withText), shot()] });
+    expect(result).toEqual({
+      ok: true,
+      report: { ...valid, screenshots: [{ type: "png", bytes: png() }, { type: "png", bytes: png() }] },
+    });
+  });
+
+  it("accepts three and refuses four", () => {
+    expect(parseReport({ ...valid, screenshots: [shot(), shot(), shot()] }).ok).toBe(true);
+    expect(parseReport({ ...valid, screenshots: [shot(), shot(), shot(), shot()] })).toEqual({
+      ok: false, status: 400, error: "invalid_report", field: "screenshots", message: "screenshots: at most 3",
+    });
+  });
+
+  it("refuses a screenshot that is not base64, naming it from 1", () => {
+    for (const data of ["not base64!", "abc", "data:image/png;base64,iVBORw0KGgo=", "QUJD\nRA=="]) {
+      expect(parseReport({ ...valid, screenshots: [shot(), { data }] })).toEqual({
+        ok: false, status: 400, error: "invalid_report", field: "screenshots", message: "screenshots[2]: not base64",
+      });
+    }
+  });
+
+  it("refuses a screenshot over 2 MB decoded, and accepts one of exactly 2 MB", () => {
+    expect(parseReport({ ...valid, screenshots: [shot(pngOfSize(2 * MiB))] }).ok).toBe(true);
+    expect(parseReport({ ...valid, screenshots: [shot(), shot(), shot(pngOfSize(2 * MiB + 1))] })).toEqual({
+      ok: false, status: 413, error: "too_large", field: "screenshots", message: "screenshots[3]: over 2 MB",
+    });
+  });
+
+  it("refuses content that is not a PNG, JPEG or WebP image", () => {
+    for (const image of [bytes("GIF89a\x01\0\x01\0"), bytes("<svg/>"), new Uint8Array()]) {
+      expect(parseReport({ ...valid, screenshots: [shot(image)] })).toEqual({
+        ok: false,
+        status: 415,
+        error: "unsupported_media_type",
+        field: "screenshots",
+        message: "screenshots[1]: not a PNG, JPEG or WebP image",
+      });
+    }
+  });
+
+  it("answers the first failing screenshot, checking base64, then size, then type", () => {
+    const result = parseReport({ ...valid, screenshots: [shot(bytes("GIF89a")), { data: "!" }] });
+    expect(result).toMatchObject({ status: 415, message: "screenshots[1]: not a PNG, JPEG or WebP image" });
+  });
+
+  it("refuses screenshots that are not objects with a string data field", () => {
+    expect(parseReport({ ...valid, screenshots: "x" })).toMatchObject({ ok: false, status: 400, field: "screenshots" });
+    expect(parseReport({ ...valid, screenshots: [{ data: 1 }] })).toMatchObject({ ok: false, field: "screenshots" });
+    expect(parseReport({ ...valid, screenshots: [{ data: "", name: "a.png" }] })).toMatchObject({
+      ok: false, status: 400, field: "unknown_key",
+    });
+  });
+
+  it("gives every other refusal status 400 and error invalid_report", () => {
+    expect(parseReport({ ...valid, type: "question" })).toMatchObject({ status: 400, error: "invalid_report" });
   });
 });

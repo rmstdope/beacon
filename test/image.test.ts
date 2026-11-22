@@ -1,33 +1,6 @@
-import { crc32, deflateSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { cleanImage } from "../src/image.js";
-
-const bytes = (...parts: (Uint8Array | number[] | string)[]): Uint8Array =>
-  Buffer.concat(parts.map((part) => (typeof part === "string" ? Buffer.from(part, "latin1") : Buffer.from(part))));
-
-function u32be(value: number): number[] {
-  return [(value >>> 24) & 255, (value >>> 16) & 255, (value >>> 8) & 255, value & 255];
-}
-
-function u32le(value: number): number[] {
-  return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255];
-}
-
-// --- PNG ---------------------------------------------------------------------------------------
-
-const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-
-function pngChunk(type: string, data: Uint8Array | string = new Uint8Array()): Uint8Array {
-  const body = bytes(type, typeof data === "string" ? data : data);
-  return bytes(u32be(body.length - 4), body, u32be(crc32(body)));
-}
-
-/** A real 1×1 red RGB PNG, with whatever extra chunks are given placed before IDAT. */
-function png(...extra: Uint8Array[]): Uint8Array {
-  const ihdr = pngChunk("IHDR", bytes(u32be(1), u32be(1), [8, 2, 0, 0, 0]));
-  const idat = pngChunk("IDAT", deflateSync(Buffer.from([0, 255, 0, 0])));
-  return bytes(PNG_SIGNATURE, ihdr, ...extra, idat, pngChunk("IEND"));
-}
+import { bytes, png, PNG_SIGNATURE, pngChunk, u32be, u32le } from "./images.js";
 
 function pngChunkTypes(image: Uint8Array): string[] {
   const types: string[] = [];
