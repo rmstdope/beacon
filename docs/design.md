@@ -240,7 +240,7 @@ mode `0600`). Beacon validates everything at start-up and exits with a clear mes
 
 | Variable | Example | Meaning |
 |---|---|---|
-| `GITHUB_APP_ID` | `1234567` | The `beacon` App's ID |
+| `GITHUB_APP_ID` | `1234567` | The `rmstdope-beacon` App's ID |
 | `GITHUB_APP_PRIVATE_KEY_BASE64` | `LS0tLS1CRUdJTi...` | The App's PEM private key, base64-encoded, because Docker env files cannot hold multi-line values |
 | `BEACON_CLIENTS` | see below | JSON object: client ID → target repository and allowed origins |
 | `PORT` | `8080` | Listen port. Defaults to `8080` |

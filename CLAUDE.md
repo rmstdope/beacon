@@ -21,11 +21,16 @@ including follow-up commits that only answer earlier findings or fix nits**: bef
 check that the latest commit has been reviewed, not just the earlier ones. A producer obtains one
 full review of the complete diff and bead, addresses every finding, and gets each fix commit
 reviewed in turn (a focused review of that commit is enough). This is stricter than cerebro's
-skills and replaces them where they differ: `produce-bead`'s "a small answer to a finding needs
-none" does not apply here, and neither does Cerebro's merge of a green Dependabot pull request
-without a review; such a pull request gets a sub-agent review like any change. Unresolved findings, a red or missing
-check, or a reviewer that cannot produce a usable result go to the navigator. This repository
-declares no `navigator_gates`.
+skills and agent files and replaces them where they differ: `produce-bead`'s "a small answer to a
+finding needs none" does not apply here. Unresolved findings, a red or missing check, or a reviewer
+that cannot produce a usable result go to the navigator. This repository declares no
+`navigator_gates`.
+
+**Dependabot is deliberately not enabled here.** Cerebro's `dependabot-sweep` merges any green
+Dependabot pull request without a review, which this rule forbids, and nothing in a consumer's
+declarations can turn that off yet (cerebro bead cb-au3o asks for a `project.conf` switch). Until
+that lands, do not enable Dependabot version or security updates on this repository; bump
+dependencies through a bead like any other change.
 
 ## Work tracking
 
@@ -38,8 +43,8 @@ in another.
 The board syncs through the Dolt remote (the repository's `origin`), not git. A fresh clone runs
 `bd bootstrap` (which refuses if a database already exists, so do not run `bd list` first); after
 that it is `bd dolt pull` and `bd dolt push`. `bd init` set `core.hooksPath` to `.beads/hooks` in
-this clone only; in a fresh clone, run `bd hooks install` after `bd bootstrap` so commits, pushes
-and checkouts run the bead hooks.
+this clone only; in a fresh clone, run `bd hooks install --beads` after `bd bootstrap` so commits,
+pushes and checkouts run the tracked hooks in `.beads/hooks`, as this clone does.
 
 ## Development practices
 
