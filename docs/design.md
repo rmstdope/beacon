@@ -340,10 +340,16 @@ app's own repository and shows them from there.
   holds at most one** of those slots: its other large requests queue behind its first, not in the
   shared queue. The rest wait with their body unread, holding a socket rather than memory, and
   reports without screenshots never wait. A declared length over 9 MB is refused at once. Once a
-  request has its slot, its body must arrive **within 60 seconds** (enough for 9 MB at about
-  1.2 Mbit/s); otherwise it is answered `408 request_timeout` and its connection closed, so a slow
-  or stalled sender cannot keep everyone else's screenshots waiting. Measured on a real server, 50
-  concurrent 9 MB reports peak at 281 MB RSS; `mem_limit` is `384m`.
+  request has its slot, its body must arrive **within 60 seconds** (enough for 9 MB at about 1.2
+  Mbit/s); otherwise it is answered `408 request_timeout` and its connection closed. This bounds
+  what one request and one address can hold, not what a sender with many addresses can: with K
+  addresses (three IPv4 addresses, or three IPv6 /64s, are enough to fill the slots) stalling in
+  turns, an honest screenshot report waits about ceil(K/3) × 60 s, and a request still queued after
+  Node's 300 s request timeout is answered by Node itself, without CORS headers, which the browser
+  client reports as `network`. Reporters sharing an address (a carrier NAT, an office) also take
+  turns with each other's large reports. Accepted: spam is a cleanup chore, and reports without
+  screenshots are never held up. Measured on a real server, 50 concurrent 9 MB reports peak at 281
+  MB RSS; `mem_limit` is `384m`.
 
 ## GitHub App
 

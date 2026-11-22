@@ -95,7 +95,8 @@ async function readBody(stream: ReadableStream<Uint8Array> | null, maxBytes: num
   const chunks: Uint8Array[] = [];
   let size = 0;
   const stop = (reason: "timeout" | "too_large" | "failed"): BodyRead => {
-    // Cancelling destroys the request stream, so a stalled sender keeps nothing of Beacon's.
+    // Stops reading; Beacon keeps nothing more of the body. This does not close the socket (the
+    // node-server body stream has no cancel): the caller's `Connection: close` answer does.
     reader.cancel().catch(() => undefined);
     return { ok: false, reason };
   };
@@ -210,7 +211,8 @@ export function createApp(options: AppOptions): Hono<Env> {
           // must not keep everyone else's screenshots waiting.
           const read = await readBody(c.req.raw.body, MAX_BODY_BYTES, bodyDeadlineMs);
           if (!read.ok) {
-            // The rest of the body is not wanted: close the connection rather than drain it.
+            // The rest of the body is not wanted: this is what closes the connection, after the
+            // answer is sent, instead of keeping it open for the sender's next request.
             c.header("Connection", "close");
             if (read.reason === "timeout") {
               log({ event: "report.rejected", status: 408 });
