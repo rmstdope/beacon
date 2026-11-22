@@ -187,14 +187,18 @@ describe("POST /v1/reports", () => {
     const { app } = setup();
     const res = await post(app, "{not json");
     expect(res.status).toBe(400);
-    expect((await errorOf(res)).error).toBe("invalid_report");
+    expect(await errorOf(res)).toMatchObject({ error: "invalid_report", field: "body" });
   });
 
   it("names the invalid field", async () => {
     const { app } = setup();
     const res = await post(app, { ...report, type: "question" });
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toMatchObject({ error: "invalid_report", message: expect.stringContaining("type") as unknown });
+    expect(await errorOf(res)).toMatchObject({
+      error: "invalid_report",
+      field: "type",
+      message: expect.stringContaining("type") as unknown,
+    });
   });
 
   it("limits each client IP to 5 reports, read from the rightmost X-Forwarded-For entry", async () => {
@@ -206,6 +210,8 @@ describe("POST /v1/reports", () => {
     expect(res.status).toBe(429);
     expect((await errorOf(res)).error).toBe("rate_limited");
     expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+    // Retry-After is not CORS-safelisted: without this a browser hides it from the frontend.
+    expect(res.headers.get("access-control-expose-headers")).toContain("Retry-After");
     expect((await post(app, report, { "x-forwarded-for": "203.0.113.8" })).status).toBe(201);
   });
 

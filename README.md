@@ -8,22 +8,26 @@ The design, the HTTP API and the reasoning behind both are in [docs/design.md](d
 
 ## Sending a report from a frontend
 
-```js
-const res = await fetch("https://beacon.rmstdope.eu/v1/reports", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    clientId: "retroquest",          // configured in Beacon, mapped to a repository and origins
-    type: "bug",                     // "bug" | "enhancement" | "feature"
-    title: "Score resets when the window is resized",
-    description: "Steps: start a level, resize the window, the score shows 0.",
-    pageUrl: location.href,          // optional
-    appVersion: "1.4.2",             // optional
-  }),
+Copy [src/client.ts](src/client.ts) into the frontend, for example as `beacon-client.ts` (it has no
+imports or dependencies), then:
+
+```ts
+import { createBeacon } from "./beacon-client";
+
+const beacon = createBeacon({ clientId: "retroquest", appVersion: "1.4.2" });
+const result = await beacon.report({
+  type: "bug",                       // "bug" | "enhancement" | "feature"
+  title: "Score resets when the window is resized",
+  description: "Steps: start a level, resize the window, the score shows 0.",
 });
-// 201 → { reference: 123 }: show "Thanks! Reference #123".
-// 429 → wait Retry-After seconds. Other errors: { error, message }, see docs/design.md.
+if (result.ok) showThanks(result.reference);                 // "Thanks! Reference #123"
+else if (result.error.code === "rate_limited") retryIn(result.error.retryAfterSeconds);
+else if (result.error.code === "invalid_report") highlight(result.error.field);
 ```
+
+The client fills in the page (without its query or fragment) and the user agent. Every outcome is a
+result, never an exception; the error codes are in [Browser client](docs/design.md#browser-client).
+To call the HTTP API directly instead, see [HTTP API](docs/design.md#http-api).
 
 The page's origin must be one of the client's configured origins.
 
