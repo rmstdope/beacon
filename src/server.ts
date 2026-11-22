@@ -4,7 +4,7 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { clientIp, rateLimitKey } from "./client-ip.js";
 import type { Client } from "./config.js";
-import { GitHubError, type IssueFiler, type ScreenshotFile } from "./github.js";
+import { GitHubError, type IssueFiler, type StoredFile } from "./github.js";
 import { buildIssue } from "./issue.js";
 import type { FixedWindowLimiter } from "./rate-limit.js";
 import type { CleanImage, ImageType } from "./image.js";
@@ -119,7 +119,7 @@ async function readBody(stream: ReadableStream<Uint8Array> | null, maxBytes: num
 const EXTENSIONS: Record<ImageType, string> = { png: "png", jpeg: "jpg", webp: "webp" };
 
 /** `YYYY-MM-DD-<6 hex>/<N>.<ext>`, N counting from 1 in the order sent. */
-function screenshotFiles(images: readonly CleanImage[], now: number, code: string): ScreenshotFile[] {
+function screenshotFiles(images: readonly CleanImage[], now: number, code: string): StoredFile[] {
   const folder = `${new Date(now).toISOString().slice(0, 10)}-${code}`;
   return images.map((image, index) => ({
     path: `${folder}/${String(index + 1)}.${EXTENSIONS[image.type]}`,

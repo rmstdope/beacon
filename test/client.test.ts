@@ -136,7 +136,7 @@ describe("Beacon client, against the real app", () => {
       { data: Buffer.from(png()).toString("base64") },
       { data: Buffer.from(tinyJpeg()).toString("base64") },
     ]);
-    expect(filer.filed[0]?.screenshots.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
+    expect(filer.filed[0]?.files.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
   });
 
   it("encodes every byte value of a large screenshot exactly", async () => {

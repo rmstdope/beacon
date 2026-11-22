@@ -265,7 +265,7 @@ describe("POST /v1/reports with screenshots", () => {
     const res = await post(app, { ...report, screenshots: [shot(withText), shot(tinyJpeg()), shot(tinyWebp())] });
     expect(res.status).toBe(201);
     const filed = filer.filed[0];
-    expect(filed?.screenshots).toEqual([
+    expect(filed?.files).toEqual([
       { path: "2026-11-22-7f3a9c/1.png", bytes: png() },
       { path: "2026-11-22-7f3a9c/2.jpg", bytes: tinyJpeg() },
       { path: "2026-11-22-7f3a9c/3.webp", bytes: tinyWebp() },
@@ -280,7 +280,7 @@ describe("POST /v1/reports with screenshots", () => {
     const { app, filer } = setup();
     await post(app, { ...report, screenshots: [shot(png())] });
     await post(app, { ...report, screenshots: [shot(png())] });
-    const paths = filer.filed.map((f) => f.screenshots[0]?.path ?? "");
+    const paths = filer.filed.map((f) => f.files[0]?.path ?? "");
     for (const path of paths) expect(path).toMatch(/^\d{4}-\d{2}-\d{2}-[0-9a-f]{6}\/1\.png$/);
     expect(paths[0]).not.toBe(paths[1]);
   });
@@ -288,7 +288,7 @@ describe("POST /v1/reports with screenshots", () => {
   it("files a report without screenshots exactly as before, with nothing to store", async () => {
     const { app, filer } = setup();
     expect((await post(app, report)).status).toBe(201);
-    expect(filer.filed[0]?.screenshots).toEqual([]);
+    expect(filer.filed[0]?.files).toEqual([]);
     expect(filer.filed[0]?.issue.body).not.toContain("### Screenshot");
   });
 
@@ -297,7 +297,7 @@ describe("POST /v1/reports with screenshots", () => {
     const big = shot(bigPng(2 * MiB));
     const res = await post(app, { ...report, screenshots: [big, big, big] });
     expect(res.status).toBe(201);
-    expect(filer.filed[0]?.screenshots).toHaveLength(3);
+    expect(filer.filed[0]?.files).toHaveLength(3);
   });
 
   it("refuses bad screenshots with the documented status and message, filing and storing nothing", async () => {

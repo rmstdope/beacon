@@ -1,6 +1,6 @@
 import { createPublicKey, generateKeyPairSync, verify } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { GitHubAppFiler, GitHubError, type ScreenshotFile } from "../src/github.js";
+import { GitHubAppFiler, GitHubError, type StoredFile } from "../src/github.js";
 import type { Issue } from "../src/issue.js";
 
 const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -292,7 +292,7 @@ describe("GitHubAppFiler.isInstalled", () => {
 
 const REPO_PATH = "/repos/rmstdope/retroquest";
 const REF = `${REPO_PATH}/git/ref/heads/beacon-screenshots`;
-const files: ScreenshotFile[] = [
+const files: StoredFile[] = [
   { path: "2026-11-22-7f3a9c/1.png", bytes: new Uint8Array([1, 2, 3]) },
   { path: "2026-11-22-7f3a9c/2.jpg", bytes: new Uint8Array([4, 5]) },
 ];
@@ -366,7 +366,7 @@ describe("GitHubAppFiler.fileIssue with screenshots", () => {
       ],
     });
     expect(body("/git/commits")).toEqual({
-      message: "Screenshots for a Beacon report [skip ci]",
+      message: "Files for a Beacon report [skip ci]",
       tree: "eee1",
       parents: ["aaa0"],
     });
@@ -374,14 +374,25 @@ describe("GitHubAppFiler.fileIssue with screenshots", () => {
     expect(git.state.head).toBe("c0ffee1");
 
     const urls = [
-      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/1.png?raw=true",
-      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/2.jpg?raw=true",
+      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/1.png",
+      "https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/2.jpg",
     ];
     expect(seen).toEqual([urls]);
     const created = gh.calls.find((c) => c.method === "POST" && c.path.endsWith("/issues"));
     expect(created?.body).toEqual({ ...issue, body: urls.join("\n") });
     const order = gh.calls.map((c) => c.path);
     expect(order.indexOf(`${REPO_PATH}/git/refs/heads/beacon-screenshots`)).toBeLessThan(order.indexOf(`${REPO_PATH}/issues`));
+  });
+
+  it("stores a save game beside the screenshots, its blob decoding to the very bytes given", async () => {
+    const git = gitRoutes();
+    const gh = fakeGitHub(git.routes);
+    const { seen, build } = builder();
+    const save = new Uint8Array(Buffer.from('{ "v": 1, "root": "K\u00e5re" }\n'));
+    await filer(gh).fileIssue(repo, build, [...files, { path: "2026-11-22-7f3a9c/save.json", bytes: save }]);
+    const blobs = gh.calls.filter((c) => c.path.endsWith("/git/blobs")).map((c) => c.body as { content: string });
+    expect(Buffer.from(blobs[2]?.content ?? "", "base64")).toEqual(Buffer.from(save));
+    expect(seen[0]?.[2]).toBe("https://github.com/rmstdope/retroquest/blob/c0ffee1/2026-11-22-7f3a9c/save.json");
   });
 
   it("starts the branch with a commit of its own when it does not exist yet", async () => {

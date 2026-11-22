@@ -35,10 +35,12 @@ function inlineCode(value: string): string {
 
 /**
  * The screenshots section, or nothing. Alt text, captions and URLs are all Beacon's own: the URLs
- * point at the commit Beacon made, so nothing here comes from the reporter.
+ * point at the commit Beacon made, so nothing here comes from the reporter. `?raw=true` makes a
+ * blob page's address serve the image itself.
  */
-function screenshotSection(urls: readonly string[]): string[] {
-  if (urls.length === 0) return [];
+function screenshotSection(pages: readonly string[]): string[] {
+  if (pages.length === 0) return [];
+  const urls = pages.map((page) => `${page}?raw=true`);
   if (urls.length === 1) return ["### Screenshot", `![Screenshot from the user](${urls[0] ?? ""})`];
   const total = String(urls.length);
   return [
@@ -72,7 +74,8 @@ function saveSection(save: StoredSave | undefined): string[] {
 
 /**
  * Turns an untrusted report into the issue Beacon files. `screenshotUrls` are the addresses of the
- * report's stored screenshots, in the order sent, and `save` where its save game was stored.
+ * report's stored screenshots' blob pages, in the order sent, and `save` where its save game was
+ * stored.
  *
  * Nothing the reporter wrote may render as markdown: the description goes inside a fenced code
  * block and context values inside code spans, so mentions, links, HTML and image embeds stay
