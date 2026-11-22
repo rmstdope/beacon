@@ -64,8 +64,15 @@ function invalid(field: string, message: string): Failure {
   return { ok: false, status: 400, error: "invalid_report", field, message };
 }
 
-/** Standard base64 with padding: no whitespace, no `data:` prefix, no URL-safe alphabet. */
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/**
+ * Standard base64 with padding: no whitespace, no `data:` prefix, no URL-safe alphabet. No repeated
+ * group, so V8 checks a 9 MB string without running out of stack; the length is checked apart.
+ */
+const BASE64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+
+function isBase64(data: string): boolean {
+  return data.length % 4 === 0 && BASE64_CHARS.test(data);
+}
 
 /** The decoded length of valid base64, known before decoding it. */
 function decodedLength(data: string): number {
@@ -78,7 +85,7 @@ function parseScreenshots(screenshots: { data: string }[]): CleanImage[] | Failu
   const images: CleanImage[] = [];
   for (const [index, { data }] of screenshots.entries()) {
     const name = `screenshots[${String(index + 1)}]`;
-    if (!BASE64.test(data)) return invalid("screenshots", `${name}: not base64`);
+    if (!isBase64(data)) return invalid("screenshots", `${name}: not base64`);
     if (decodedLength(data) > MAX_SCREENSHOT_BYTES) {
       return { ok: false, status: 413, error: "too_large", field: "screenshots", message: `${name}: over 2 MB` };
     }

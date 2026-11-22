@@ -159,6 +159,21 @@ describe("parseReport: screenshots", () => {
     });
   });
 
+  it("answers 413, not a crash, for a screenshot far over the limit, up to what fits in the body", () => {
+    for (const length of [6_000_000, 9_000_000]) {
+      expect(parseReport({ ...valid, screenshots: [{ data: "A".repeat(length) }] }), String(length)).toMatchObject({
+        status: 413,
+        message: "screenshots[1]: over 2 MB",
+      });
+    }
+  });
+
+  it("refuses misplaced padding as not base64", () => {
+    for (const data of ["QQ==QUJD", "Q===", "=QUJD"]) {
+      expect(parseReport({ ...valid, screenshots: [{ data }] }), data).toMatchObject({ message: "screenshots[1]: not base64" });
+    }
+  });
+
   it("refuses content that is not a PNG, JPEG or WebP image", () => {
     for (const image of [bytes("GIF89a\x01\0\x01\0"), bytes("<svg/>"), new Uint8Array()]) {
       expect(parseReport({ ...valid, screenshots: [shot(image)] })).toEqual({
