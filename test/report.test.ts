@@ -203,3 +203,70 @@ describe("parseReport: screenshots", () => {
     expect(parseReport({ ...valid, type: "question" })).toMatchObject({ status: 400, error: "invalid_report" });
   });
 });
+
+describe("parseReport: a save game", () => {
+  const KiB = 1024;
+  const encode = (bytes: Uint8Array | string) => ({ data: Buffer.from(bytes).toString("base64") });
+  /** A JSON string literal padded to exactly `size` bytes. */
+  const jsonOfSize = (size: number) => Buffer.from(`"${"x".repeat(size - 2)}"`);
+
+  it("keeps a save's bytes exactly as sent, whitespace and non-ASCII text included", () => {
+    const text = '{ "v": 1,\n  "root": "Kåre’s lantern" }\n';
+    const result = parseReport({ ...valid, save: encode(text) });
+    expect(result).toEqual({ ok: true, report: { ...valid, save: new Uint8Array(Buffer.from(text)) } });
+  });
+
+  it("leaves the save out when none is sent", () => {
+    expect(parseReport(valid)).toEqual({ ok: true, report: valid });
+  });
+
+  it("refuses a save that is not base64", () => {
+    for (const data of ["e30", "e30=\n", "data:application/json;base64,e30=", "e3-_"]) {
+      expect(parseReport({ ...valid, save: { data } }), data).toEqual({
+        ok: false, status: 400, error: "invalid_report", field: "save", message: "save: not base64",
+      });
+    }
+  });
+
+  it("accepts a save of 512 KB and refuses one byte more", () => {
+    expect(parseReport({ ...valid, save: encode(jsonOfSize(512 * KiB)) }).ok).toBe(true);
+    expect(parseReport({ ...valid, save: encode(jsonOfSize(512 * KiB + 1)) })).toEqual({
+      ok: false, status: 413, error: "too_large", field: "save", message: "save: over 512 KB",
+    });
+  });
+
+  it("checks a 9 MB save string without crashing", () => {
+    const data = "A".repeat(9 * 1024 * KiB);
+    expect(parseReport({ ...valid, save: { data } })).toMatchObject({ status: 413, message: "save: over 512 KB" });
+    expect(parseReport({ ...valid, save: { data: data + "!" } })).toMatchObject({ status: 400, message: "save: not base64" });
+  });
+
+  it("refuses a save that is not UTF-8 JSON", () => {
+    for (const bytes of [Buffer.from("not json"), Buffer.from([0x22, 0xff, 0x22]), Buffer.from("")]) {
+      expect(parseReport({ ...valid, save: encode(bytes) }), bytes.toString("hex")).toEqual({
+        ok: false, status: 415, error: "unsupported_media_type", field: "save", message: "save: not JSON",
+      });
+    }
+  });
+
+  it("refuses a save that is not an object with a string data field", () => {
+    expect(parseReport({ ...valid, save: "e30=" })).toMatchObject({ ok: false, status: 400, field: "save" });
+    expect(parseReport({ ...valid, save: { data: 1 } })).toMatchObject({ ok: false, status: 400, field: "save" });
+    expect(parseReport({ ...valid, save: { data: "e30=", name: "a.json" } })).toMatchObject({
+      ok: false, status: 400, field: "unknown_key",
+    });
+  });
+
+  it("checks the screenshots before the save", () => {
+    const result = parseReport({ ...valid, screenshots: [{ data: "!" }], save: { data: "!" } });
+    expect(result).toMatchObject({ field: "screenshots", message: "screenshots[1]: not base64" });
+  });
+
+  it("keeps screenshots and a save together", () => {
+    const result = parseReport({ ...valid, screenshots: [shot()], save: encode("{}") });
+    expect(result).toEqual({
+      ok: true,
+      report: { ...valid, screenshots: [{ type: "png", bytes: png() }], save: new Uint8Array(Buffer.from("{}")) },
+    });
+  });
+});
