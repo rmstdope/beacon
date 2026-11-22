@@ -219,6 +219,8 @@ instance whose worst case is some spam to delete.
   expire, so a flood from rotating addresses cannot exhaust memory.
 - Limits are checked before Beacon talks to GitHub, so spam never spends GitHub API quota, and
   before any screenshot is stored.
+- At most three large bodies (over 16 KB) are read at once; the rest wait (see *Screenshots*), so a
+  flood of 9 MB requests is bounded in memory as well as in reports filed.
 
 ## The issue Beacon files
 
@@ -324,13 +326,18 @@ app's own repository and shows them from there.
   maintainer removes them by hand.
 - **Hidden details are removed** before anything is stored, without re-encoding the picture. PNG
   keeps only the critical chunks and those the picture depends on (colour, transparency, pixel
-  density, animation), dropping text, EXIF, time and private chunks. JPEG keeps JFIF, ICC colour
+  density, animation), dropping text, EXIF, time and private chunks. JPEG keeps the JFIF header (without any embedded thumbnail), ICC colour
   profiles, the Adobe colour marker and the image segments, dropping EXIF, XMP, comments, other
   application segments and anything after the end marker; a non-default EXIF orientation is kept as
   an EXIF segment holding only that tag, so a phone photo is not shown rotated. WebP drops its EXIF,
   XMP and unknown chunks. Anything malformed is refused as not an image.
-- **Memory:** a 9 MB report briefly holds several copies of its body. Measured with three
-  concurrent 9 MB reports, live heap and buffers stay under 100 MB; `mem_limit` is `384m`.
+- **Memory:** a 9 MB report briefly holds several copies of its body, and its body is parsed before
+  the rate limits can be checked (they need the client ID inside it). So at most **three requests
+  with a body over 16 KB** (or of unknown length) are read and handled at once; the rest wait for a
+  slot with their body unread, holding a socket rather than memory. Nothing is refused for it, so
+  no status changes, and reports without screenshots never wait. A declared length over 9 MB is
+  refused at once without waiting. Measured on a real server, 50 concurrent 9 MB reports peak at
+  281 MB RSS; `mem_limit` is `384m`.
 
 ## GitHub App
 
