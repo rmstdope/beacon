@@ -12,7 +12,8 @@ labelled `via-beacon`, and answers with the issue number. The users are the peop
 those apps, and the developers who integrate a frontend. "Working" means: a valid report from an
 allowed origin becomes exactly one sanitized issue in the right repository; anything else is
 refused with the documented status; nothing the reporter wrote can render, notify, cross-link or
-hide text on GitHub; and Beacon stores nothing.
+hide text on GitHub; and Beacon stores nothing of its own (a report's screenshots, metadata
+removed, go to the app's own `beacon-screenshots` branch before its issue is filed).
 
 ## Producer review
 
