@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,24 +27,42 @@ function visible(path: string): string {
   );
 }
 
-function git(cwd: string, args: string[], input?: string): Buffer {
-  return execFileSync("git", args, { cwd, ...(input === undefined ? {} : { input }) });
+/** Room for every staged text blob in one `cat-file --batch` answer; the default is 1 MiB. */
+const MAX_BUFFER = 256 * 1024 * 1024;
+
+function git(cwd: string, args: string[], input?: string, env: NodeJS.ProcessEnv = process.env): Buffer {
+  return execFileSync("git", args, {
+    cwd,
+    env,
+    maxBuffer: MAX_BUFFER,
+    ...(input === undefined ? {} : { input }),
+  });
+}
+
+/**
+ * The environment without git's own variables. A hook runs with GIT_INDEX_FILE or GIT_DIR naming
+ * the outer repository; git in a throwaway repository must not inherit them, or `git add` there
+ * overwrites the outer index.
+ */
+function isolatedEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
 }
 
 /**
  * Every tracked path in the repository at `cwd` whose working-tree content holds an invisible
  * character, one line per finding: `<path> (<where>)`.
  */
-function findInvisible(cwd: string): string[] {
+function findInvisible(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
   // Tracked files only: exactly what is committed and what CI sees. Stray local files (Finder's
   // .DS_Store, pack tarballs, symlinks) are not code and must not fail the suite. Run it after
   // `git add` to check a new file before committing.
-  const paths = git(cwd, ["ls-files", "-z"])
+  const paths = git(cwd, ["ls-files", "-z"], undefined, env)
     .toString("utf8")
     .split("\0")
     .filter((path) => path !== "");
   const offenders: string[] = [];
-  for (const path of paths) {
+  // A conflicted path is listed once per stage; each finding is reported once.
+  for (const path of new Set(paths)) {
     // A name is text whatever the file holds, so binary files are not exempt from this check.
     if (INVISIBLE.test(path)) offenders.push(`${visible(path)} (name)`);
     if (BINARY.test(path)) continue;
@@ -61,7 +79,7 @@ function findInvisible(cwd: string): string[] {
     }
     if (INVISIBLE.test(content.toString("utf8"))) offenders.push(`${visible(path)} (working tree)`);
   }
-  for (const path of stagedOffenders(cwd)) offenders.push(`${visible(path)} (staged)`);
+  for (const path of new Set(stagedOffenders(cwd, env))) offenders.push(`${visible(path)} (staged)`);
   return offenders;
 }
 
@@ -70,9 +88,9 @@ function findInvisible(cwd: string): string[] {
  * even when the working tree has since been fixed and not re-staged. All blobs are read by one
  * `git cat-file --batch`, never one process per file.
  */
-function stagedOffenders(cwd: string): string[] {
+function stagedOffenders(cwd: string, env: NodeJS.ProcessEnv): string[] {
   // `<mode> <oid> <stage>\t<path>`; a conflicted path lists one entry per stage, each scanned.
-  const entries = git(cwd, ["ls-files", "--stage", "-z"])
+  const entries = git(cwd, ["ls-files", "--stage", "-z"], undefined, env)
     .toString("utf8")
     .split("\0")
     .filter((entry) => entry !== "")
@@ -85,7 +103,7 @@ function stagedOffenders(cwd: string): string[] {
     .filter(({ mode, path }) => (mode === "100644" || mode === "100755") && !BINARY.test(path));
   if (entries.length === 0) return [];
 
-  const out = git(cwd, ["cat-file", "--batch"], entries.map(({ oid }) => `${oid}\n`).join(""));
+  const out = git(cwd, ["cat-file", "--batch"], entries.map(({ oid }) => `${oid}\n`).join(""), env);
   const offenders: string[] = [];
   let at = 0;
   for (const { path } of entries) {
@@ -105,6 +123,9 @@ function stagedOffenders(cwd: string): string[] {
 
 describe("findInvisible", () => {
   let repo = "";
+  // Every git call against a throwaway repository runs without the outer git environment.
+  const run = (dir: string, args: string[], input?: string) => git(dir, args, input, isolatedEnv());
+  const scan = (dir: string) => findInvisible(dir, isolatedEnv());
   afterEach(() => {
     if (repo !== "") rmSync(repo, { recursive: true, force: true });
     repo = "";
@@ -113,33 +134,68 @@ describe("findInvisible", () => {
   /** A throwaway repository holding `files`, all staged; nothing is committed, so no identity is needed. */
   function stagedRepo(files: Record<string, string>): string {
     repo = mkdtempSync(join(tmpdir(), "beacon-hygiene-"));
-    git(repo, ["init", "--quiet"]);
+    run(repo, ["init", "--quiet"]);
     for (const [name, content] of Object.entries(files)) writeFileSync(join(repo, name), content);
-    git(repo, ["add", "--all"]);
+    run(repo, ["add", "--all"]);
     return repo;
   }
 
   it("reports a tracked file whose name contains U+202E", () => {
     const dir = stagedRepo({ [`a${RLO}b.txt`]: "clean\n" });
-    expect(findInvisible(dir)).toEqual(["a\\u{202E}b.txt (name)"]);
+    expect(scan(dir)).toEqual(["a\\u{202E}b.txt (name)"]);
   });
 
   it("reports staged content that the working tree has since fixed", () => {
     const dir = stagedRepo({ "bad.ts": `const a = 1;${RLO}\n` });
     writeFileSync(join(dir, "bad.ts"), "const a = 1;\n");
-    expect(findInvisible(dir)).toEqual(["bad.ts (staged)"]);
+    expect(scan(dir)).toEqual(["bad.ts (staged)"]);
   });
 
   it("reports nothing for a clean repository, and finds a bad blob after clean ones", () => {
     const dir = stagedRepo({ "a.ts": "one\ntwo\n\n", "b.ts": "", "c.md": "three\n" });
     symlinkSync("a.ts", join(dir, "link.ts"));
-    git(dir, ["add", "link.ts"]);
-    expect(findInvisible(dir)).toEqual([]);
+    run(dir, ["add", "link.ts"]);
+    expect(scan(dir)).toEqual([]);
 
     // The last blob in the batch is the bad one, so a framing error would misread or miss it.
     writeFileSync(join(dir, "z.ts"), `${RLO}\n`);
-    git(dir, ["add", "z.ts"]);
-    expect(findInvisible(dir)).toEqual(["z.ts (working tree)", "z.ts (staged)"]);
+    run(dir, ["add", "z.ts"]);
+    expect(scan(dir)).toEqual(["z.ts (working tree)", "z.ts (staged)"]);
+  });
+
+  it("leaves the outer repository alone when git hook variables are set", () => {
+    // A hook runs with GIT_INDEX_FILE (and sometimes GIT_DIR) pointing at the outer repository.
+    const decoy = mkdtempSync(join(tmpdir(), "beacon-hygiene-decoy-"));
+    const saved = process.env.GIT_INDEX_FILE;
+    process.env.GIT_INDEX_FILE = join(decoy, "index");
+    try {
+      const dir = stagedRepo({ "a.ts": "clean\n", [`b${RLO}.ts`]: "clean\n" });
+      expect(scan(dir)).toEqual(["b\\u{202E}.ts (name)"]);
+      expect(existsSync(join(decoy, "index"))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = saved;
+      rmSync(decoy, { recursive: true, force: true });
+    }
+  });
+
+  it("reads staged content larger than execFileSync's default 1 MiB buffer", () => {
+    const dir = stagedRepo({ "big.txt": "x".repeat(3 * 1024 * 1024), "z.ts": `${RLO}\n` });
+    expect(scan(dir)).toEqual(["z.ts (working tree)", "z.ts (staged)"]);
+  });
+
+  it("reports a conflicted path once per finding, not once per stage", () => {
+    const name = `c${RLO}.ts`;
+    const dir = stagedRepo({ [name]: `${RLO}\n` });
+    const oid = run(dir, ["hash-object", "-w", "--", name]).toString("utf8").trim();
+    run(dir, ["rm", "--cached", "--quiet", "--", name]);
+    const stages = [1, 2, 3].map((stage) => `100644 ${oid} ${String(stage)}\t${name}\n`).join("");
+    run(dir, ["update-index", "--index-info"], stages);
+    expect(scan(dir)).toEqual([
+      "c\\u{202E}.ts (name)",
+      "c\\u{202E}.ts (working tree)",
+      "c\\u{202E}.ts (staged)",
+    ]);
   });
 });
 
