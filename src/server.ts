@@ -1,11 +1,13 @@
+import { randomBytes } from "node:crypto";
 import type { HttpBindings } from "@hono/node-server";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { clientIp, rateLimitKey } from "./client-ip.js";
 import type { Client } from "./config.js";
-import { GitHubError, type IssueFiler } from "./github.js";
+import { GitHubError, type IssueFiler, type ScreenshotFile } from "./github.js";
 import { buildIssue } from "./issue.js";
 import type { FixedWindowLimiter } from "./rate-limit.js";
+import type { CleanImage, ImageType } from "./image.js";
 import { parseReport } from "./report.js";
 
 export type LogEntry = { event: string } & Record<string, string | number | boolean>;
@@ -20,16 +22,114 @@ export interface AppOptions {
   /** Receives one entry per request outcome. Never given report text or client IPs. */
   log?: (entry: LogEntry) => void;
   now?: () => number;
+  /** Six lowercase hex digits naming a report's screenshot folder; random by default. */
+  randomHex?: () => string;
+  /** Large bodies read and handled at once; the rest wait their turn. Defaults to 3. */
+  maxLargeInFlight?: number;
+  /** How long a large body may take to arrive once its slot is granted. Defaults to 60 s. */
+  bodyDeadlineMs?: number;
 }
 
-const MAX_BODY_BYTES = 16 * 1024;
+/** Three 2 MiB screenshots, base64-encoded, plus the text. */
+const MAX_BODY_BYTES = 9 * 1024 * 1024;
 const MAX_USER_AGENT = 512;
 
 type Env = { Bindings: Partial<HttpBindings> };
 
+/** Bodies up to this size (a report without screenshots) are never made to wait. */
+const SMALL_BODY_BYTES = 16 * 1024;
+
+/**
+ * Lets `limit` holders in at once and queues the rest in order. A queued request has not had its
+ * body read, so it holds a socket, not memory: the rate limits are checked only after parsing,
+ * and this is what bounds the memory a flood of 9 MB requests can take.
+ */
+function slots(limit: number): () => Promise<() => void> {
+  let free = limit;
+  const waiting: (() => void)[] = [];
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else free++;
+  };
+  return async () => {
+    if (free > 0) free--;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    return release;
+  };
+}
+
+/**
+ * Runs `task` after every earlier task with the same key has finished, so one address holds at
+ * most one large-body slot and its other large requests queue behind it, not in the shared queue.
+ */
+function perKey(): <T>(key: string, task: () => Promise<T>) => Promise<T> {
+  const tails = new Map<string, Promise<void>>();
+  return async (key, task) => {
+    const before = tails.get(key) ?? Promise.resolve();
+    const mine = Promise.withResolvers<undefined>();
+    const tail = before.then(() => mine.promise);
+    tails.set(key, tail);
+    await before;
+    try {
+      return await task();
+    } finally {
+      mine.resolve(undefined);
+      if (tails.get(key) === tail) tails.delete(key);
+    }
+  };
+}
+
+type BodyRead = { ok: true; body: Uint8Array } | { ok: false; reason: "timeout" | "too_large" | "failed" };
+
+/** Reads a whole body, giving up past `maxBytes` or after `deadlineMs`, and then cancelling the rest. */
+async function readBody(stream: ReadableStream<Uint8Array> | null, maxBytes: number, deadlineMs: number): Promise<BodyRead> {
+  if (stream === null) return { ok: true, body: new Uint8Array() };
+  const reader = stream.getReader();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<"timeout">((resolve) => {
+    timer = setTimeout(() => {
+      resolve("timeout");
+    }, deadlineMs);
+  });
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const stop = (reason: "timeout" | "too_large" | "failed"): BodyRead => {
+    // Stops reading; Beacon keeps nothing more of the body. This does not close the socket (the
+    // node-server body stream has no cancel): the caller's `Connection: close` answer does.
+    reader.cancel().catch(() => undefined);
+    return { ok: false, reason };
+  };
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.read(), deadline]);
+      if (next === "timeout") return stop("timeout");
+      if (next.done) return { ok: true, body: Buffer.concat(chunks) };
+      size += next.value.length;
+      if (size > maxBytes) return stop("too_large");
+      chunks.push(next.value);
+    }
+  } catch {
+    return stop("failed");
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const EXTENSIONS: Record<ImageType, string> = { png: "png", jpeg: "jpg", webp: "webp" };
+
+/** `YYYY-MM-DD-<6 hex>/<N>.<ext>`, N counting from 1 in the order sent. */
+function screenshotFiles(images: readonly CleanImage[], now: number, code: string): ScreenshotFile[] {
+  const folder = `${new Date(now).toISOString().slice(0, 10)}-${code}`;
+  return images.map((image, index) => ({
+    path: `${folder}/${String(index + 1)}.${EXTENSIONS[image.type]}`,
+    bytes: image.bytes,
+  }));
+}
+
 function fail(
   c: Context,
-  status: 400 | 403 | 404 | 413 | 415 | 429 | 500 | 502,
+  status: 400 | 403 | 404 | 408 | 413 | 415 | 429 | 500 | 502,
   error: string,
   message: string,
   extra: { field?: string } = {},
@@ -41,6 +141,18 @@ export function createApp(options: AppOptions): Hono<Env> {
   const { clients, filer, ipLimiter, clientLimiter, revision } = options;
   const log = options.log ?? (() => undefined);
   const now = options.now ?? Date.now;
+  const randomHex = options.randomHex ?? (() => randomBytes(3).toString("hex"));
+  const largeBody = slots(options.maxLargeInFlight ?? 3);
+  const oneAtATime = perKey();
+  const bodyDeadlineMs = options.bodyDeadlineMs ?? 60_000;
+  const tooLarge = `body is over ${String(MAX_BODY_BYTES / 1024 / 1024)} MB`;
+
+  /** The rate-limit key of the request's client address. */
+  function addressKey(c: Context<Env>): string {
+    // c.env is undefined when the app is driven without a Node server, as in tests.
+    const bindings = c.env as Partial<HttpBindings> | undefined;
+    return rateLimitKey(clientIp(c.req.header("x-forwarded-for"), bindings?.incoming?.socket.remoteAddress));
+  }
   const allOrigins = new Set([...clients.values()].flatMap((client) => client.origins));
 
   const app = new Hono<Env>();
@@ -86,11 +198,46 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
       await next();
     },
+    async (c, next) => {
+      // A declared length over the limit is refused by bodyLimit at once, without waiting; an
+      // unknown length (chunked) could be anything, so it waits like a large one.
+      const header = c.req.header("content-length");
+      const length = header === undefined ? NaN : Number(header);
+      if (length <= SMALL_BODY_BYTES || length > MAX_BODY_BYTES) return next();
+      return oneAtATime(addressKey(c), async () => {
+        const release = await largeBody();
+        try {
+          // The slot is held while the body arrives, so the body gets a deadline: a slow sender
+          // must not keep everyone else's screenshots waiting.
+          const read = await readBody(c.req.raw.body, MAX_BODY_BYTES, bodyDeadlineMs);
+          if (!read.ok) {
+            // The rest of the body is not wanted: this is what closes the connection, after the
+            // answer is sent, instead of keeping it open for the sender's next request.
+            c.header("Connection", "close");
+            if (read.reason === "timeout") {
+              log({ event: "report.rejected", status: 408 });
+              return fail(c, 408, "request_timeout", "body took too long to arrive");
+            }
+            if (read.reason === "too_large") {
+              log({ event: "report.rejected", status: 413 });
+              return fail(c, 413, "too_large", tooLarge);
+            }
+            log({ event: "report.rejected", status: 400, field: "body" });
+            return fail(c, 400, "invalid_report", "body is not valid JSON", { field: "body" });
+          }
+          c.req.raw = new Request(c.req.raw, { body: read.body });
+          await next();
+          return undefined;
+        } finally {
+          release();
+        }
+      });
+    },
     bodyLimit({
       maxSize: MAX_BODY_BYTES,
       onError: (c) => {
         log({ event: "report.rejected", status: 413 });
-        return fail(c, 413, "too_large", `body is over ${String(MAX_BODY_BYTES / 1024)} KB`);
+        return fail(c, 413, "too_large", tooLarge);
       },
     }),
     async (c) => {
@@ -103,8 +250,8 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
       const parsed = parseReport(input);
       if (!parsed.ok) {
-        log({ event: "report.rejected", status: 400, field: parsed.field });
-        return fail(c, 400, "invalid_report", parsed.message, { field: parsed.field });
+        log({ event: "report.rejected", status: parsed.status, field: parsed.field });
+        return fail(c, parsed.status, parsed.error, parsed.message, { field: parsed.field });
       }
       const report = parsed.report;
 
@@ -114,11 +261,8 @@ export function createApp(options: AppOptions): Hono<Env> {
         return fail(c, 403, "forbidden", "client or origin not allowed");
       }
 
-      // c.env is undefined when the app is driven without a Node server, as in tests.
-      const bindings = c.env as Partial<HttpBindings> | undefined;
-      const ip = clientIp(c.req.header("x-forwarded-for"), bindings?.incoming?.socket.remoteAddress);
       const limits = [
-        ["ip", ipLimiter, rateLimitKey(ip)],
+        ["ip", ipLimiter, addressKey(c)],
         ["client", clientLimiter, report.clientId],
       ] as const;
       // Check every limit before recording any, so one limit's refusal spends no other allowance.
@@ -138,12 +282,15 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
 
       const started = now();
+      const images = report.screenshots ?? [];
+      const files = images.length > 0 ? screenshotFiles(images, started, randomHex()) : [];
       try {
-        const reference = await filer.fileIssue(client.repo, buildIssue(report));
+        const reference = await filer.fileIssue(client.repo, (urls) => buildIssue(report, urls), files);
         log({
           event: "report.filed",
           client: report.clientId,
           type: report.type,
+          screenshots: files.length,
           issue: reference,
           githubMs: now() - started,
         });

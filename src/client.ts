@@ -29,6 +29,11 @@ export interface NewReport {
   type: ReportType;
   title: string;
   description: string;
+  /**
+   * Up to 3 images (PNG, JPEG or WebP), each at most 2 MB: a `File` from a file input or a pasted
+   * image is a `Blob`. Beacon checks the limits and refuses the whole report if one is broken.
+   */
+  screenshots?: Blob[];
 }
 
 /**
@@ -39,7 +44,10 @@ export type BeaconError =
   /** `field` is a report field name, `body` or `unknown_key`. */
   | { code: "invalid_report"; field: string; message: string }
   | { code: "rate_limited"; retryAfterSeconds: number; message: string }
-  | { code: "forbidden" | "too_large" | "unsupported_media_type" | "upstream_failed" | "internal"; message: string }
+  | {
+      code: "forbidden" | "too_large" | "unsupported_media_type" | "request_timeout" | "upstream_failed" | "internal";
+      message: string;
+    }
   /** No response: offline, DNS, or the browser refused the cross-origin request. */
   | { code: "network"; message: string }
   /** A response Beacon's API does not document. */
@@ -56,7 +64,14 @@ const DEFAULT_ENDPOINT = "https://beacon.rmstdope.eu";
 const MAX_PAGE_URL = 2_048;
 const MAX_USER_AGENT = 512;
 const DEFAULT_RETRY_AFTER_SECONDS = 60;
-const PLAIN_ERRORS = ["forbidden", "too_large", "unsupported_media_type", "upstream_failed", "internal"] as const;
+const PLAIN_ERRORS = [
+  "forbidden",
+  "too_large",
+  "unsupported_media_type",
+  "request_timeout",
+  "upstream_failed",
+  "internal",
+] as const;
 
 /** The browser globals this client reads, reached through `globalThis` so it builds anywhere. */
 const browser = globalThis as { location?: { href?: string }; navigator?: { userAgent?: string } };
@@ -71,6 +86,16 @@ function pageUrl(): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Base64 of a Blob, encoded in chunks so a 2 MB image does not overflow the argument limit. */
+async function base64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let at = 0; at < bytes.length; at += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
+  }
+  return btoa(binary);
 }
 
 function retryAfter(header: string | null): number {
@@ -125,6 +150,15 @@ export function createBeacon(options: BeaconOptions): Beacon {
     async report(report: NewReport): Promise<ReportResult> {
       const page = pageUrl();
       const userAgent = browser.navigator?.userAgent?.slice(0, MAX_USER_AGENT);
+      const screenshots: { data: string }[] = [];
+      for (const [index, blob] of (report.screenshots ?? []).entries()) {
+        try {
+          screenshots.push({ data: await base64(blob) });
+        } catch {
+          const message = `screenshots[${String(index + 1)}]: could not be read`;
+          return { ok: false, error: { code: "invalid_report", field: "screenshots", message } };
+        }
+      }
       const body = {
         clientId: options.clientId,
         type: report.type,
@@ -133,6 +167,7 @@ export function createBeacon(options: BeaconOptions): Beacon {
         ...(page === undefined ? {} : { pageUrl: page }),
         ...(options.appVersion === undefined ? {} : { appVersion: options.appVersion }),
         ...(userAgent ? { userAgent } : {}),
+        ...(screenshots.length > 0 ? { screenshots } : {}),
       };
       let response: Response;
       try {

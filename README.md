@@ -1,7 +1,8 @@
 # Beacon
 
 Beacon relays bug reports, enhancement suggestions and feature requests from the browser frontends of
-rmstdope apps to GitHub issues in each app's repository. It stores nothing. It runs at
+rmstdope apps to GitHub issues in each app's repository, with up to three screenshots kept on a
+`beacon-screenshots` branch there. It stores nothing of its own. It runs at
 `https://beacon.rmstdope.eu`.
 
 The design, the HTTP API and the reasoning behind both are in [docs/design.md](docs/design.md).
@@ -19,6 +20,7 @@ const result = await beacon.report({
   type: "bug",                       // "bug" | "enhancement" | "feature"
   title: "Score resets when the window is resized",
   description: "Steps: start a level, resize the window, the score shows 0.",
+  screenshots: [file],               // optional: up to 3 PNG, JPEG or WebP Blobs/Files, 2 MB each
 });
 if (result.ok) showThanks(result.reference);                 // "Thanks! Reference #123"
 else if (result.error.code === "rate_limited") retryIn(result.error.retryAfterSeconds);
@@ -29,7 +31,9 @@ The client fills in the page (without its query or fragment) and the user agent.
 result, never an exception; the error codes are in [Browser client](docs/design.md#browser-client).
 To call the HTTP API directly instead, see [HTTP API](docs/design.md#http-api).
 
-The page's origin must be one of the client's configured origins.
+The page's origin must be one of the client's configured origins. An app offering screenshots must
+follow [Offering screenshots in an app](docs/design.md#offering-screenshots-in-an-app), which for a
+public app includes showing a required warning next to the picker.
 
 ## Adding a client
 
@@ -38,6 +42,8 @@ The page's origin must be one of the client's configured origins.
 2. Add the client to `BEACON_CLIENTS` in `/srv/rmstdope/secrets/beacon/web.env` on the VPS:
    `"<client-id>": {"repo": "rmstdope/<repo>", "origins": ["https://<app>.rmstdope.eu"]}`.
 3. Restart Beacon. Its start-up log warns about any configured repository the App is not installed on.
+4. Protect the repository's default branch with a ruleset the App cannot bypass: the App can write
+   contents, which it needs for the `beacon-screenshots` branch.
 
 ## Development
 

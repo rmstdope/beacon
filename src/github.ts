@@ -2,10 +2,22 @@ import { createSign } from "node:crypto";
 import type { RepoRef } from "./config.js";
 import type { Issue } from "./issue.js";
 
+/** A screenshot to store: `path` is Beacon's own, such as `2026-11-22-7f3a9c/1.png`. */
+export interface ScreenshotFile {
+  path: string;
+  bytes: Uint8Array;
+}
+
+/** Makes the issue once the screenshots' addresses are known, given in the order the files were. */
+export type IssueBuilder = (screenshotUrls: string[]) => Issue;
+
 /** Files issues in a repository. The seam the HTTP layer depends on. */
 export interface IssueFiler {
-  /** Files the issue and returns its number. Throws a GitHubError on any GitHub failure. */
-  fileIssue(repo: RepoRef, issue: Issue): Promise<number>;
+  /**
+   * Stores the screenshots, if any, then files the issue and returns its number. Throws a
+   * GitHubError on any GitHub failure; if storing fails, no issue is filed.
+   */
+  fileIssue(repo: RepoRef, issue: Issue | IssueBuilder, screenshots?: readonly ScreenshotFile[]): Promise<number>;
   /** Whether the App is installed on the repository. */
   isInstalled(repo: RepoRef): Promise<boolean>;
 }
@@ -30,6 +42,15 @@ const LABEL_STYLE: Record<string, { color: string; description: string }> = {
   "feature-request": { color: "0e8a16", description: "A new feature" },
   "via-beacon": { color: "5319e7", description: "Filed by Beacon for an anonymous user; untrusted text" },
 };
+
+/** The never-merged branch each app repository keeps its reports' screenshots on. */
+export const SCREENSHOT_BRANCH = "beacon-screenshots";
+
+/** `[skip ci]` keeps the app's GitHub Actions from running on every report. */
+const SCREENSHOT_COMMIT_MESSAGE = "Screenshots for a Beacon report [skip ci]";
+
+/** Attempts at moving the branch when other reports keep moving it first. */
+const BRANCH_ATTEMPTS = 3;
 
 /** Installation tokens live an hour; renew this long before they expire. */
 const TOKEN_RENEW_MS = 5 * 60_000;
@@ -92,15 +113,101 @@ export class GitHubAppFiler implements IssueFiler {
     this.#timeoutMs = options.timeoutMs ?? 8_000;
   }
 
-  async fileIssue(repo: RepoRef, issue: Issue): Promise<number> {
+  async fileIssue(repo: RepoRef, build: Issue | IssueBuilder, screenshots: readonly ScreenshotFile[] = []): Promise<number> {
     const signal = AbortSignal.timeout(this.#timeoutMs);
     const token = await this.#installationToken(repo, signal);
+    const urls = screenshots.length > 0 ? await this.#storeScreenshots(repo, screenshots, token, signal) : [];
+    const issue = typeof build === "function" ? build(urls) : build;
     for (const label of issue.labels) await this.#ensureLabel(repo, label, token, signal);
     const res = await this.#request("POST", `/repos/${repoKey(repo)}/issues`, `token ${token}`, signal, issue);
     await this.#expect(res, 201, "creating the issue", repo);
     const body = await this.#json(res, signal);
     if (!Number.isInteger(body.number)) throw new GitHubError("creating the issue answered without a number");
     return body.number as number;
+  }
+
+  /**
+   * Commits the screenshots to the screenshot branch in one commit, through the Git Data API, and
+   * returns their addresses pinned to that commit. A branch that does not exist yet starts with a
+   * commit of its own, sharing no history with the default branch.
+   */
+  async #storeScreenshots(
+    repo: RepoRef,
+    files: readonly ScreenshotFile[],
+    token: string,
+    signal: AbortSignal,
+  ): Promise<string[]> {
+    const git = `/repos/${repoKey(repo)}/git`;
+    const auth = `token ${token}`;
+    let blobs: string[] | undefined;
+    for (let attempt = 1; ; attempt++) {
+      const head = await this.#branchHead(repo, token, signal);
+      // Side by side: three 2 MB uploads one after another would spend much of the 8 s budget.
+      blobs ??= await Promise.all(
+        files.map(async (file) => {
+          const content = Buffer.from(file.bytes).toString("base64");
+          const res = await this.#request("POST", `${git}/blobs`, auth, signal, { content, encoding: "base64" });
+          return this.#sha(res, 201, "storing a screenshot", repo, signal);
+        }),
+      );
+      const shas = blobs;
+      const tree = files.map((file, i) => ({ path: file.path, mode: "100644", type: "blob", sha: shas[i] }));
+      const treeRes = await this.#request("POST", `${git}/trees`, auth, signal, {
+        ...(head ? { base_tree: head.tree } : {}),
+        tree,
+      });
+      const treeSha = await this.#sha(treeRes, 201, "creating the screenshot tree", repo, signal);
+      const commitRes = await this.#request("POST", `${git}/commits`, auth, signal, {
+        message: SCREENSHOT_COMMIT_MESSAGE,
+        tree: treeSha,
+        parents: head ? [head.commit] : [],
+      });
+      const commit = await this.#sha(commitRes, 201, "creating the screenshot commit", repo, signal);
+      const moved = head
+        ? await this.#request("PATCH", `${git}/refs/heads/${SCREENSHOT_BRANCH}`, auth, signal, { sha: commit, force: false })
+        : await this.#request("POST", `${git}/refs`, auth, signal, { ref: `refs/heads/${SCREENSHOT_BRANCH}`, sha: commit });
+      // 422: another report moved or created the branch first. Build again on its new tip.
+      if (moved.status === 422 && attempt < BRANCH_ATTEMPTS) {
+        await discard(moved);
+        continue;
+      }
+      await this.#expect(moved, head ? 200 : 201, `moving ${SCREENSHOT_BRANCH}`, repo);
+      await discard(moved);
+      return files.map((file) => `https://github.com/${repoKey(repo)}/blob/${commit}/${file.path}?raw=true`);
+    }
+  }
+
+  /** The screenshot branch's tip and its tree, or undefined while the branch does not exist. */
+  async #branchHead(
+    repo: RepoRef,
+    token: string,
+    signal: AbortSignal,
+  ): Promise<{ commit: string; tree: string } | undefined> {
+    const git = `/repos/${repoKey(repo)}/git`;
+    const ref = await this.#request("GET", `${git}/ref/heads/${SCREENSHOT_BRANCH}`, `token ${token}`, signal);
+    if (ref.status === 404) {
+      await discard(ref);
+      return undefined;
+    }
+    await this.#expect(ref, 200, `reading ${SCREENSHOT_BRANCH}`, repo);
+    const object = (await this.#json(ref, signal)).object as Record<string, unknown> | undefined;
+    const commit = object?.sha;
+    if (typeof commit !== "string" || !/^[0-9a-f]+$/.test(commit)) {
+      throw new GitHubError(`reading ${SCREENSHOT_BRANCH} answered without a sha`);
+    }
+    const res = await this.#request("GET", `${git}/commits/${commit}`, `token ${token}`, signal);
+    await this.#expect(res, 200, `reading the tip of ${SCREENSHOT_BRANCH}`, repo);
+    const tree = (await this.#json(res, signal)).tree as Record<string, unknown> | undefined;
+    if (typeof tree?.sha !== "string") throw new GitHubError(`reading the tip of ${SCREENSHOT_BRANCH} answered without a tree`);
+    return { commit, tree: tree.sha };
+  }
+
+  /** Expects `status` and a hex `sha` in the answer, which may become part of a URL or path. */
+  async #sha(res: Response, status: number, what: string, repo: RepoRef, signal: AbortSignal): Promise<string> {
+    await this.#expect(res, status, what, repo);
+    const sha = (await this.#json(res, signal)).sha;
+    if (typeof sha !== "string" || !/^[0-9a-f]+$/.test(sha)) throw new GitHubError(`${what} answered without a sha`);
+    return sha;
   }
 
   async isInstalled(repo: RepoRef): Promise<boolean> {

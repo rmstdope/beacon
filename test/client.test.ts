@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import * as client from "../src/client.js";
 import { createBeacon, type BeaconOptions, type ReportResult } from "../src/client.js";
-import type { Client, RepoRef } from "../src/config.js";
-import { GitHubError, type IssueFiler } from "../src/github.js";
-import type { Issue } from "../src/issue.js";
+import type { Client } from "../src/config.js";
+import { GitHubError } from "../src/github.js";
+import { FakeFiler } from "./fake-filer.js";
+import { png, tinyJpeg } from "./images.js";
 import { FixedWindowLimiter } from "../src/rate-limit.js";
 import * as server from "../src/report.js";
 import { createApp, type AppOptions } from "../src/server.js";
@@ -15,19 +16,6 @@ const ENDPOINT = "https://beacon.test";
 const clients = new Map<string, Client>([
   ["retroquest", { repo: { owner: "rmstdope", name: "retroquest" }, origins: [RQ] }],
 ]);
-
-class FakeFiler implements IssueFiler {
-  filed: { repo: RepoRef; issue: Issue }[] = [];
-  failWith: Error | undefined;
-  fileIssue(repo: RepoRef, issue: Issue): Promise<number> {
-    if (this.failWith) return Promise.reject(this.failWith);
-    this.filed.push({ repo, issue });
-    return Promise.resolve(100 + this.filed.length);
-  }
-  isInstalled(): Promise<boolean> {
-    return Promise.resolve(true);
-  }
-}
 
 function urlOf(input: Parameters<typeof fetch>[0]): string {
   return input instanceof Request ? input.url : input.toString();
@@ -140,6 +128,42 @@ describe("Beacon client, against the real app", () => {
     expect(requests[0]?.body.userAgent).toBe("U".repeat(512));
   });
 
+  it("sends screenshots as base64, in order, and the app files them", async () => {
+    const { beacon, filer, requests } = setup();
+    const file = new Blob([png()], { type: "image/png" });
+    expect((await beacon.report({ ...bug, screenshots: [file, new Blob([tinyJpeg()])] })).ok).toBe(true);
+    expect(requests[0]?.body.screenshots).toEqual([
+      { data: Buffer.from(png()).toString("base64") },
+      { data: Buffer.from(tinyJpeg()).toString("base64") },
+    ]);
+    expect(filer.filed[0]?.screenshots.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
+  });
+
+  it("encodes every byte value of a large screenshot exactly", async () => {
+    const { beacon, requests } = setup();
+    const large = new Uint8Array(300_000).map((_, i) => i % 256);
+    await beacon.report({ ...bug, screenshots: [new Blob([large])] });
+    const sent = requests[0]?.body.screenshots as { data: string }[];
+    expect(Buffer.from(sent[0]?.data ?? "", "base64")).toEqual(Buffer.from(large));
+  });
+
+  it("reports a screenshot that cannot be read as invalid_report, sending nothing", async () => {
+    const { beacon, requests } = setup();
+    const unreadable = new Blob([png()]);
+    unreadable.arrayBuffer = () => Promise.reject(new DOMException("gone", "NotReadableError"));
+    const result = await beacon.report({ ...bug, screenshots: [new Blob([png()]), unreadable] });
+    expect(errorOf(result)).toEqual({ code: "invalid_report", field: "screenshots", message: "screenshots[2]: could not be read" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends no screenshots field when there are none", async () => {
+    const { beacon, requests } = setup();
+    await beacon.report(bug);
+    await beacon.report({ ...bug, screenshots: [] });
+    expect(requests[0]?.body).not.toHaveProperty("screenshots");
+    expect(requests[1]?.body).not.toHaveProperty("screenshots");
+  });
+
   it("reports an invalid report as invalid_report naming the field", async () => {
     const { beacon } = setup();
     expect(errorOf(await beacon.report({ ...bug, title: "x" }))).toMatchObject({ code: "invalid_report", field: "title" });
@@ -153,7 +177,7 @@ describe("Beacon client, against the real app", () => {
 
   it("reports an oversized body as too_large", async () => {
     const { beacon } = setup();
-    expect(errorOf(await beacon.report({ ...bug, description: "x".repeat(20_000) })).code).toBe("too_large");
+    expect(errorOf(await beacon.report({ ...bug, description: "x".repeat(9 * 1024 * 1024) })).code).toBe("too_large");
   });
 
   it("reports a rate limit as rate_limited with the seconds to wait", async () => {
@@ -181,6 +205,13 @@ describe("Beacon client, against responses the real client cannot provoke", () =
     expect(errorOf(await stubbed(errorResponse(415, "unsupported_media_type")).report(bug))).toEqual({
       code: "unsupported_media_type",
       message: "developer text for unsupported_media_type",
+    });
+  });
+
+  it("reports a body that took too long to arrive as request_timeout", async () => {
+    expect(errorOf(await stubbed(errorResponse(408, "request_timeout")).report(bug))).toEqual({
+      code: "request_timeout",
+      message: "developer text for request_timeout",
     });
   });
 

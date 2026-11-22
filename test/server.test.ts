@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { GitHubError, type IssueFiler } from "../src/github.js";
-import type { Issue } from "../src/issue.js";
+import { GitHubError } from "../src/github.js";
+import { FakeFiler } from "./fake-filer.js";
 import { FixedWindowLimiter } from "../src/rate-limit.js";
 import { createApp, type AppOptions } from "../src/server.js";
-import type { Client, RepoRef } from "../src/config.js";
+import type { Client } from "../src/config.js";
+import { bytes, png, pngChunk, tinyJpeg, tinyWebp } from "./images.js";
 
 const RQ = "https://retroquest.rmstdope.eu";
 const NESER = "https://neser.rmstdope.eu";
@@ -19,19 +20,6 @@ const report = {
   title: "Score resets",
   description: "SECRET-DESCRIPTION-TEXT",
 };
-
-class FakeFiler implements IssueFiler {
-  filed: { repo: RepoRef; issue: Issue }[] = [];
-  failWith: Error | undefined;
-  fileIssue(repo: RepoRef, issue: Issue): Promise<number> {
-    if (this.failWith) return Promise.reject(this.failWith);
-    this.filed.push({ repo, issue });
-    return Promise.resolve(100 + this.filed.length);
-  }
-  isInstalled(): Promise<boolean> {
-    return Promise.resolve(true);
-  }
-}
 
 function setup(overrides: Partial<AppOptions> = {}) {
   const filer = new FakeFiler();
@@ -176,11 +164,12 @@ describe("POST /v1/reports", () => {
     expect(res.status).toBe(201);
   });
 
-  it("refuses a body over 16 KB", async () => {
-    const { app } = setup();
-    const res = await post(app, { ...report, description: "x".repeat(17_000) });
+  it("refuses a body over 9 MB before parsing it", async () => {
+    const { app, filer } = setup();
+    const res = await post(app, { ...report, padding: "x".repeat(9 * 1024 * 1024) });
     expect(res.status).toBe(413);
-    expect((await errorOf(res)).error).toBe("too_large");
+    expect(await errorOf(res)).toEqual({ error: "too_large", message: "body is over 9 MB" });
+    expect(filer.calls).toBe(0);
   });
 
   it("rejects malformed JSON", async () => {
@@ -257,6 +246,223 @@ describe("POST /v1/reports", () => {
     expect(all).not.toContain("Score resets");
     expect(all).not.toContain("203.0.113.7");
     expect(all).not.toContain("SECRET-KEY-NAME");
+  });
+});
+
+const shot = (image: Uint8Array) => ({ data: Buffer.from(image).toString("base64") });
+const MiB = 1024 * 1024;
+const NOV_22 = Date.parse("2026-11-22T23:59:59Z");
+
+/** A PNG of exactly `size` bytes, padded with a private chunk that cleaning drops. */
+function bigPng(size: number): Uint8Array {
+  return png(pngChunk("prVt", new Uint8Array(size - png().length - 12)));
+}
+
+describe("POST /v1/reports with screenshots", () => {
+  it("hands the cleaned screenshots to the filer in a dated folder, and shows them in the issue", async () => {
+    const { app, filer, logs } = setup({ now: () => NOV_22, randomHex: () => "7f3a9c" });
+    const withText = png(pngChunk("tEXt", "GPS\0home"));
+    const res = await post(app, { ...report, screenshots: [shot(withText), shot(tinyJpeg()), shot(tinyWebp())] });
+    expect(res.status).toBe(201);
+    const filed = filer.filed[0];
+    expect(filed?.screenshots).toEqual([
+      { path: "2026-11-22-7f3a9c/1.png", bytes: png() },
+      { path: "2026-11-22-7f3a9c/2.jpg", bytes: tinyJpeg() },
+      { path: "2026-11-22-7f3a9c/3.webp", bytes: tinyWebp() },
+    ]);
+    expect(filed?.issue.body).toContain(
+      "![Screenshot 2 of 3 from the user](https://github.com/stored/2026-11-22-7f3a9c/2.jpg?raw=true)",
+    );
+    expect(logs.some((line) => line.includes('"event":"report.filed"') && line.includes('"screenshots":3'))).toBe(true);
+  });
+
+  it("uses a fresh six-hex-digit folder code by default", async () => {
+    const { app, filer } = setup();
+    await post(app, { ...report, screenshots: [shot(png())] });
+    await post(app, { ...report, screenshots: [shot(png())] });
+    const paths = filer.filed.map((f) => f.screenshots[0]?.path ?? "");
+    for (const path of paths) expect(path).toMatch(/^\d{4}-\d{2}-\d{2}-[0-9a-f]{6}\/1\.png$/);
+    expect(paths[0]).not.toBe(paths[1]);
+  });
+
+  it("files a report without screenshots exactly as before, with nothing to store", async () => {
+    const { app, filer } = setup();
+    expect((await post(app, report)).status).toBe(201);
+    expect(filer.filed[0]?.screenshots).toEqual([]);
+    expect(filer.filed[0]?.issue.body).not.toContain("### Screenshot");
+  });
+
+  it("accepts three 2 MB screenshots in one request", async () => {
+    const { app, filer } = setup();
+    const big = shot(bigPng(2 * MiB));
+    const res = await post(app, { ...report, screenshots: [big, big, big] });
+    expect(res.status).toBe(201);
+    expect(filer.filed[0]?.screenshots).toHaveLength(3);
+  });
+
+  it("refuses bad screenshots with the documented status and message, filing and storing nothing", async () => {
+    const cases: [unknown[], number, string, string][] = [
+      [[shot(png()), shot(png()), shot(png()), shot(png())], 400, "invalid_report", "screenshots: at most 3"],
+      [[shot(png()), { data: "%%%" }], 400, "invalid_report", "screenshots[2]: not base64"],
+      [[shot(bigPng(2 * MiB + 1))], 413, "too_large", "screenshots[1]: over 2 MB"],
+      [[shot(png()), shot(png()), shot(bytes("GIF89a"))], 415, "unsupported_media_type", "screenshots[3]: not a PNG, JPEG or WebP image"],
+    ];
+    for (const [screenshots, status, error, message] of cases) {
+      const { app, filer, logs } = setup();
+      const res = await post(app, { ...report, screenshots });
+      expect(res.status, message).toBe(status);
+      expect(await errorOf(res), message).toEqual({ error, message, field: "screenshots" });
+      expect(filer.calls, message).toBe(0);
+      expect(logs.join("\n"), message).toContain('"field":"screenshots"');
+    }
+  });
+
+  it("checks the client, the origin and the limits before storing anything", async () => {
+    const { app, filer } = setup();
+    const withShot = { ...report, screenshots: [shot(png())] };
+    expect((await post(app, { ...withShot, clientId: "nope" })).status).toBe(403);
+    expect((await post(app, withShot, { origin: NESER })).status).toBe(403);
+    expect((await post(app, withShot, { "content-type": "text/plain" })).status).toBe(415);
+    expect(filer.calls).toBe(0);
+    for (let i = 0; i < 5; i++) expect((await post(app, withShot)).status).toBe(201);
+    expect((await post(app, withShot)).status).toBe(429);
+    expect(filer.calls).toBe(5);
+  });
+
+  it("answers 502 and files nothing when storing fails", async () => {
+    const { app, filer } = setup();
+    filer.failWith = new GitHubError("storing a screenshot answered 500");
+    const res = await post(app, { ...report, screenshots: [shot(png())] });
+    expect(res.status).toBe(502);
+    expect((await errorOf(res)).error).toBe("upstream_failed");
+    expect(filer.filed).toHaveLength(0);
+  });
+});
+
+describe("POST /v1/reports, large bodies in flight", () => {
+  const sized = (body: unknown) => {
+    const text = JSON.stringify(body);
+    return { text, headers: { "content-length": String(Buffer.byteLength(text)) } };
+  };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+  /** Holds the filer's calls until `release` is called. */
+  function hold(filer: ReturnType<typeof setup>["filer"]) {
+    const { promise, resolve } = Promise.withResolvers<undefined>();
+    filer.hold = promise.then(() => undefined);
+    return () => {
+      resolve(undefined);
+    };
+  }
+  const statuses = (pending: (Response | Promise<Response>)[]) => Promise.all(pending.map(async (p) => (await p).status));
+
+  it("reads at most the configured number of large bodies at once; the rest wait, then succeed", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 2 });
+    const release = hold(filer);
+    const large = sized({ ...report, screenshots: [shot(bigPng(100_000))] });
+    const pending = [1, 2, 3, 4].map((i) => post(app, large.text, { ...large.headers, "x-forwarded-for": `203.0.113.${String(i)}` }));
+    await tick();
+    expect(filer.inFlight).toBe(2);
+    expect(filer.calls).toBe(2);
+
+    filer.hold = undefined; // the two in flight stay held; new calls are not
+    const small = sized(report);
+    const quick = await post(app, small.text, { ...small.headers, "x-forwarded-for": "198.51.100.1" });
+    expect(quick.status).toBe(201);
+    filer.maxInFlight = filer.inFlight; // count only the large reports from here on
+
+    release();
+    expect(await statuses(pending)).toEqual([201, 201, 201, 201]);
+    expect(filer.maxInFlight).toBe(2);
+  });
+
+  it("gates a body of unknown length, but refuses an oversized declared one without waiting", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 1 });
+    const release = hold(filer);
+    const first = post(app, { ...report, screenshots: [shot(png())] }); // no content-length: gated
+    await tick();
+    expect(filer.inFlight).toBe(1);
+    const unknown = post(app, report, { "x-forwarded-for": "198.51.100.2" });
+    await tick();
+    expect(filer.calls).toBe(1); // still waiting for the slot
+
+    const oversized = await post(app, report, { "content-length": String(10 * MiB), "x-forwarded-for": "198.51.100.3" });
+    expect(oversized.status).toBe(413);
+
+    filer.hold = undefined;
+    release();
+    expect((await first).status).toBe(201);
+    expect((await unknown).status).toBe(201);
+  });
+
+  it("gives one address one large slot at a time, so it cannot take them all", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 2 });
+    const release = hold(filer);
+    const large = sized({ ...report, screenshots: [shot(bigPng(100_000))] });
+    const same = { ...large.headers, "x-forwarded-for": "203.0.113.50" };
+    const pending = [post(app, large.text, same), post(app, large.text, same)];
+    await tick();
+    expect(filer.calls).toBe(1); // a slot is free, but this address already holds one
+    pending.push(post(app, large.text, { ...large.headers, "x-forwarded-for": "203.0.113.51" }));
+    await tick();
+    expect(filer.calls).toBe(2);
+    filer.hold = undefined;
+    release();
+    expect(await statuses(pending)).toEqual([201, 201, 201]);
+  });
+
+  it("answers 408 and frees the slot when a large body does not arrive in time", async () => {
+    const { app, logs } = setup({ maxLargeInFlight: 1, bodyDeadlineMs: 50 });
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+    });
+    const res = await app.request(
+      new Request("http://beacon.test/v1/reports", {
+        method: "POST",
+        headers: { origin: RQ, "content-type": "application/json", "content-length": "100000", "x-forwarded-for": "203.0.113.60" },
+        body: stalled,
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(408);
+    expect(await errorOf(res)).toEqual({ error: "request_timeout", message: "body took too long to arrive" });
+    expect(logs.some((line) => line.includes('"status":408'))).toBe(true);
+    const ok = sized({ ...report, screenshots: [shot(bigPng(30_000))] });
+    expect((await post(app, ok.text, { ...ok.headers, "x-forwarded-for": "203.0.113.61" })).status).toBe(201);
+  });
+
+  it("refuses a body of unknown length once it passes 9 MB", async () => {
+    const { app } = setup();
+    const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+    let sent = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 12) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const res = await app.request(
+      new Request("http://beacon.test/v1/reports", {
+        method: "POST",
+        headers: { origin: RQ, "content-type": "application/json" },
+        body: endless,
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(await errorOf(res)).toEqual({ error: "too_large", message: "body is over 9 MB" });
+  });
+
+  it("frees the slot when a large report is refused or fails", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 1 });
+    const bad = sized({ ...report, screenshots: [{ data: "%%%%" }], padding: "x".repeat(20_000) });
+    expect((await post(app, bad.text, bad.headers)).status).toBe(400);
+    filer.failWith = new GitHubError("down");
+    const large = sized({ ...report, screenshots: [shot(png(pngChunk("prVt", new Uint8Array(20_000))))] });
+    expect((await post(app, large.text, large.headers)).status).toBe(502);
+    filer.failWith = undefined;
+    expect((await post(app, large.text, { ...large.headers, "x-forwarded-for": "198.51.100.4" })).status).toBe(201);
   });
 });
 

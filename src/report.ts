@@ -1,5 +1,10 @@
 import { z } from "zod";
+import { cleanImage, type CleanImage } from "./image.js";
 import { stripUnsafe } from "./text.js";
+
+export const MAX_SCREENSHOTS = 3;
+/** Decoded bytes per screenshot: 2 MiB. */
+export const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
 
 export const REPORT_TYPES = ["bug", "enhancement", "feature"] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
@@ -33,28 +38,90 @@ const ReportSchema = z.strictObject({
   pageUrl: pageUrl.optional(),
   appVersion: z.string().max(64).optional(),
   userAgent: z.string().max(512).optional(),
+  screenshots: z.array(z.strictObject({ data: z.string() })).max(MAX_SCREENSHOTS, "at most 3").optional(),
 });
 
-export type Report = z.infer<typeof ReportSchema>;
+/** A report as validated: screenshots are decoded and cleaned, and absent when none were sent. */
+export type Report = Omit<z.infer<typeof ReportSchema>, "screenshots"> & { screenshots?: CleanImage[] };
 
 /**
  * On failure, `field` is a schema field name, `body` or `unknown_key`: never text the caller chose,
  * so it is safe to log. `message` may quote the caller's input and goes only into the response.
  */
-export type ParseResult = { ok: true; report: Report } | { ok: false; field: string; message: string };
+export type ParseResult =
+  | { ok: true; report: Report }
+  | {
+      ok: false;
+      status: 400 | 413 | 415;
+      error: "invalid_report" | "too_large" | "unsupported_media_type";
+      field: string;
+      message: string;
+    };
+
+type Failure = Extract<ParseResult, { ok: false }>;
+
+function invalid(field: string, message: string): Failure {
+  return { ok: false, status: 400, error: "invalid_report", field, message };
+}
+
+/**
+ * Standard base64 with padding: no whitespace, no `data:` prefix, no URL-safe alphabet. No repeated
+ * group, so V8 checks a 9 MB string without running out of stack; the length is checked apart.
+ */
+const BASE64_CHARS = /^[A-Za-z0-9+/]*={0,2}$/;
+
+function isBase64(data: string): boolean {
+  return data.length % 4 === 0 && BASE64_CHARS.test(data);
+}
+
+/** The decoded length of valid base64, known before decoding it. */
+function decodedLength(data: string): number {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
+}
+
+/** Checks each screenshot in order (base64, then size, then type) and cleans it; N counts from 1. */
+function parseScreenshots(screenshots: { data: string }[]): CleanImage[] | Failure {
+  const images: CleanImage[] = [];
+  for (const [index, { data }] of screenshots.entries()) {
+    const name = `screenshots[${String(index + 1)}]`;
+    if (!isBase64(data)) return invalid("screenshots", `${name}: not base64`);
+    if (decodedLength(data) > MAX_SCREENSHOT_BYTES) {
+      return { ok: false, status: 413, error: "too_large", field: "screenshots", message: `${name}: over 2 MB` };
+    }
+    const image = cleanImage(Buffer.from(data, "base64"));
+    if (image === undefined) {
+      return {
+        ok: false,
+        status: 415,
+        error: "unsupported_media_type",
+        field: "screenshots",
+        message: `${name}: not a PNG, JPEG or WebP image`,
+      };
+    }
+    images.push(image);
+  }
+  return images;
+}
 
 /** Validates an untrusted request body. On failure, names the first offending field. */
 export function parseReport(input: unknown): ParseResult {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
-    return { ok: false, field: "body", message: "body must be a JSON object" };
+    return invalid("body", "body must be a JSON object");
   }
   const result = ReportSchema.safeParse(input);
-  if (result.success) return { ok: true, report: result.data };
-  const issue = result.error.issues[0];
-  if (issue?.code === "unrecognized_keys") {
-    const key = (issue.keys[0] ?? "").slice(0, 64);
-    return { ok: false, field: "unknown_key", message: `unknown field: ${key}` };
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    if (issue?.code === "unrecognized_keys") {
+      const key = (issue.keys[0] ?? "").slice(0, 64);
+      return invalid("unknown_key", `unknown field: ${key}`);
+    }
+    const field = String(issue?.path[0] ?? "body");
+    return invalid(field, `${field}: ${issue?.message ?? "invalid"}`);
   }
-  const field = String(issue?.path[0] ?? "body");
-  return { ok: false, field, message: `${field}: ${issue?.message ?? "invalid"}` };
+  const { screenshots, ...report } = result.data;
+  if (screenshots === undefined || screenshots.length === 0) return { ok: true, report };
+  const images = parseScreenshots(screenshots);
+  if (!Array.isArray(images)) return images;
+  return { ok: true, report: { ...report, screenshots: images } };
 }
