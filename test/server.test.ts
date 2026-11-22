@@ -187,14 +187,18 @@ describe("POST /v1/reports", () => {
     const { app } = setup();
     const res = await post(app, "{not json");
     expect(res.status).toBe(400);
-    expect((await errorOf(res)).error).toBe("invalid_report");
+    expect(await errorOf(res)).toMatchObject({ error: "invalid_report", field: "body" });
   });
 
   it("names the invalid field", async () => {
     const { app } = setup();
     const res = await post(app, { ...report, type: "question" });
     expect(res.status).toBe(400);
-    expect(await errorOf(res)).toMatchObject({ error: "invalid_report", message: expect.stringContaining("type") as unknown });
+    expect(await errorOf(res)).toMatchObject({
+      error: "invalid_report",
+      field: "type",
+      message: expect.stringContaining("type") as unknown,
+    });
   });
 
   it("limits each client IP to 5 reports, read from the rightmost X-Forwarded-For entry", async () => {

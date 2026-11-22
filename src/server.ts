@@ -27,8 +27,14 @@ const MAX_USER_AGENT = 512;
 
 type Env = { Bindings: Partial<HttpBindings> };
 
-function fail(c: Context, status: 400 | 403 | 404 | 413 | 415 | 429 | 500 | 502, error: string, message: string) {
-  return c.json({ error, message }, status);
+function fail(
+  c: Context,
+  status: 400 | 403 | 404 | 413 | 415 | 429 | 500 | 502,
+  error: string,
+  message: string,
+  extra: { field?: string } = {},
+) {
+  return c.json({ error, message, ...extra }, status);
 }
 
 export function createApp(options: AppOptions): Hono<Env> {
@@ -91,12 +97,12 @@ export function createApp(options: AppOptions): Hono<Env> {
         input = await c.req.json();
       } catch {
         log({ event: "report.rejected", status: 400, field: "body" });
-        return fail(c, 400, "invalid_report", "body is not valid JSON");
+        return fail(c, 400, "invalid_report", "body is not valid JSON", { field: "body" });
       }
       const parsed = parseReport(input);
       if (!parsed.ok) {
         log({ event: "report.rejected", status: 400, field: parsed.field });
-        return fail(c, 400, "invalid_report", parsed.message);
+        return fail(c, 400, "invalid_report", parsed.message, { field: parsed.field });
       }
       const report = parsed.report;
 
