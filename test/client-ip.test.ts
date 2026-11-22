@@ -43,6 +43,7 @@ describe("rateLimitKey", () => {
     expect(rateLimitKey("::ffff:cb00:7107")).toBe("203.0.113.7");
     expect(rateLimitKey("0:0:0:0:0:ffff:203.0.113.7")).toBe("203.0.113.7");
     expect(rateLimitKey("0::FFFF:198.51.100.1")).toBe("198.51.100.1");
+    expect(rateLimitKey("::ffff:203.0.113.7%eth0")).toBe("203.0.113.7");
   });
 
   it("passes through anything else unchanged", () => {

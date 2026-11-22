@@ -37,7 +37,11 @@ const TOKEN_RENEW_MS = 5 * 60_000;
 /** Statuses after which the cached installation ID and token may be stale (uninstalled, revoked). */
 const AUTH_FAILURES = new Set([401, 404]);
 
-/** GitHub also answers 403 for rate limits; then re-authenticating would only add calls. */
+/**
+ * GitHub also answers 403 for rate limits; a 403 carrying rate-limit headers drops nothing, since
+ * re-authenticating would only add calls. A secondary-limit 403 without those headers costs one
+ * extra token request per report, which Beacon's own rate limits bound.
+ */
 function isRateLimit(res: Response): boolean {
   return res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after");
 }

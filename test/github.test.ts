@@ -193,6 +193,20 @@ describe("GitHubAppFiler.fileIssue", () => {
     }
   });
 
+  it("applies the same forgetting when reading a label fails", async () => {
+    let failing = true;
+    const gh = fakeGitHub({
+      "GET /repos/rmstdope/retroquest/labels/bug": () => (failing ? json(401, {}) : json(200, {})),
+    });
+    const f = filer(gh);
+    await expect(f.fileIssue(repo, issue)).rejects.toThrow(GitHubError);
+    failing = false;
+    await f.fileIssue(repo, issue);
+    const count = (suffix: string) => gh.calls.filter((c) => c.path.endsWith(suffix)).length;
+    expect(count("/installation")).toBe(2);
+    expect(count("/access_tokens")).toBe(2);
+  });
+
   it("fails with a GitHubError when a success answer is not JSON", async () => {
     const gh = fakeGitHub({ "POST /repos/rmstdope/retroquest/issues": () => new Response("<html>", { status: 201 }) });
     await expect(filer(gh).fileIssue(repo, issue)).rejects.toThrow(GitHubError);
