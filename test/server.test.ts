@@ -394,9 +394,69 @@ describe("POST /v1/reports, large bodies in flight", () => {
     expect((await unknown).status).toBe(201);
   });
 
+  it("gives one address one large slot at a time, so it cannot take them all", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 2 });
+    const release = hold(filer);
+    const large = sized({ ...report, screenshots: [shot(bigPng(100_000))] });
+    const same = { ...large.headers, "x-forwarded-for": "203.0.113.50" };
+    const pending = [post(app, large.text, same), post(app, large.text, same)];
+    await tick();
+    expect(filer.calls).toBe(1); // a slot is free, but this address already holds one
+    pending.push(post(app, large.text, { ...large.headers, "x-forwarded-for": "203.0.113.51" }));
+    await tick();
+    expect(filer.calls).toBe(2);
+    filer.hold = undefined;
+    release();
+    expect(await statuses(pending)).toEqual([201, 201, 201]);
+  });
+
+  it("answers 408 and frees the slot when a large body does not arrive in time", async () => {
+    const { app, logs } = setup({ maxLargeInFlight: 1, bodyDeadlineMs: 50 });
+    const stalled = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+    });
+    const res = await app.request(
+      new Request("http://beacon.test/v1/reports", {
+        method: "POST",
+        headers: { origin: RQ, "content-type": "application/json", "content-length": "100000", "x-forwarded-for": "203.0.113.60" },
+        body: stalled,
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(408);
+    expect(await errorOf(res)).toEqual({ error: "request_timeout", message: "body took too long to arrive" });
+    expect(logs.some((line) => line.includes('"status":408'))).toBe(true);
+    const ok = sized({ ...report, screenshots: [shot(bigPng(30_000))] });
+    expect((await post(app, ok.text, { ...ok.headers, "x-forwarded-for": "203.0.113.61" })).status).toBe(201);
+  });
+
+  it("refuses a body of unknown length once it passes 9 MB", async () => {
+    const { app } = setup();
+    const chunk = new Uint8Array(1024 * 1024).fill(0x20);
+    let sent = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 12) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const res = await app.request(
+      new Request("http://beacon.test/v1/reports", {
+        method: "POST",
+        headers: { origin: RQ, "content-type": "application/json" },
+        body: endless,
+        duplex: "half",
+      }),
+    );
+    expect(res.status).toBe(413);
+    expect(await errorOf(res)).toEqual({ error: "too_large", message: "body is over 9 MB" });
+  });
+
   it("frees the slot when a large report is refused or fails", async () => {
     const { app, filer } = setup({ maxLargeInFlight: 1 });
-    const bad = sized({ ...report, screenshots: [{ data: "%%%%" }], padding: "x" });
+    const bad = sized({ ...report, screenshots: [{ data: "%%%%" }], padding: "x".repeat(20_000) });
     expect((await post(app, bad.text, bad.headers)).status).toBe(400);
     filer.failWith = new GitHubError("down");
     const large = sized({ ...report, screenshots: [shot(png(pngChunk("prVt", new Uint8Array(20_000))))] });

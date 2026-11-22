@@ -44,7 +44,10 @@ export type BeaconError =
   /** `field` is a report field name, `body` or `unknown_key`. */
   | { code: "invalid_report"; field: string; message: string }
   | { code: "rate_limited"; retryAfterSeconds: number; message: string }
-  | { code: "forbidden" | "too_large" | "unsupported_media_type" | "upstream_failed" | "internal"; message: string }
+  | {
+      code: "forbidden" | "too_large" | "unsupported_media_type" | "request_timeout" | "upstream_failed" | "internal";
+      message: string;
+    }
   /** No response: offline, DNS, or the browser refused the cross-origin request. */
   | { code: "network"; message: string }
   /** A response Beacon's API does not document. */
@@ -61,7 +64,14 @@ const DEFAULT_ENDPOINT = "https://beacon.rmstdope.eu";
 const MAX_PAGE_URL = 2_048;
 const MAX_USER_AGENT = 512;
 const DEFAULT_RETRY_AFTER_SECONDS = 60;
-const PLAIN_ERRORS = ["forbidden", "too_large", "unsupported_media_type", "upstream_failed", "internal"] as const;
+const PLAIN_ERRORS = [
+  "forbidden",
+  "too_large",
+  "unsupported_media_type",
+  "request_timeout",
+  "upstream_failed",
+  "internal",
+] as const;
 
 /** The browser globals this client reads, reached through `globalThis` so it builds anywhere. */
 const browser = globalThis as { location?: { href?: string }; navigator?: { userAgent?: string } };

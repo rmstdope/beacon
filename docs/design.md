@@ -103,6 +103,7 @@ Responses:
 | `201` | — | Filed. Body: `{"reference": <issue number>}` |
 | `400` | `invalid_report` | Malformed JSON or a field breaks the rules. `field` names it: a report field, `body` (malformed JSON) or `unknown_key` |
 | `403` | `forbidden` | Unknown client ID, or the request's `Origin` is not allowed for that client. The two cases are not distinguished |
+| `408` | `request_timeout` | A body over 16 KB took more than 60 seconds to arrive once Beacon started reading it (see *Screenshots*, memory). The connection is closed |
 | `413` | `too_large` | The body is over 9 MB, or a screenshot is over 2 MB |
 | `415` | `unsupported_media_type` | The content type is not `application/json`, or a screenshot is not a PNG, JPEG or WebP image |
 | `429` | `rate_limited` | A rate limit was hit. Includes a `Retry-After` header in seconds |
@@ -145,11 +146,11 @@ const result = await beacon.report({ type: "bug", title, description });
 - **What it fills in:** `pageUrl` is the page's origin and path, without the query or fragment, which
   can carry tokens and would be published with the issue. It is left out when the page is not
   `http(s)` or the result is over 2,048 characters. `userAgent` is the browser's, cut at 512.
-- **Errors:** `code` is the API's `error` (`invalid_report` adds `field`, `rate_limited` adds
-  `retryAfterSeconds` from `Retry-After`, or 60 when that is missing), plus `network` when no response
-  arrived (offline, or the browser refused the cross-origin request) and `unexpected`, with the
-  status, for any response this table does not document. `report` never throws. `message` stays
-  developer text.
+- **Errors:** `code` is the API's `error`, including `request_timeout` (`invalid_report` adds
+  `field`, `rate_limited` adds `retryAfterSeconds` from `Retry-After`, or 60 when that is missing),
+  plus `network` when no response arrived (offline, or the browser refused the cross-origin request)
+  and `unexpected`, with the status, for any response this table does not document. `report` never
+  throws. `message` stays developer text.
 - **Screenshots:** `report({ ..., screenshots: [file1, file2] })` takes `Blob`s (a `File` from a
   file input or a pasted image is one) and sends them base64-encoded. It checks no limits; Beacon's
   answer does. A Blob the browser cannot read gives `invalid_report` with field `screenshots` and
@@ -219,8 +220,9 @@ instance whose worst case is some spam to delete.
   expire, so a flood from rotating addresses cannot exhaust memory.
 - Limits are checked before Beacon talks to GitHub, so spam never spends GitHub API quota, and
   before any screenshot is stored.
-- At most three large bodies (over 16 KB) are read at once; the rest wait (see *Screenshots*), so a
-  flood of 9 MB requests is bounded in memory as well as in reports filed.
+- At most three large bodies (over 16 KB) are read at once, one per address, each with 60 seconds
+  to arrive; the rest wait (see *Screenshots*), so a flood of 9 MB requests is bounded in memory as
+  well as in reports filed.
 
 ## The issue Beacon files
 
@@ -334,11 +336,14 @@ app's own repository and shows them from there.
   is refused as not an image.
 - **Memory:** a 9 MB report briefly holds several copies of its body, and its body is parsed before
   the rate limits can be checked (they need the client ID inside it). So at most **three requests
-  with a body over 16 KB** (or of unknown length) are read and handled at once; the rest wait for a
-  slot with their body unread, holding a socket rather than memory. Nothing is refused for it, so
-  no status changes, and reports without screenshots never wait. A declared length over 9 MB is
-  refused at once without waiting. Measured on a real server, 50 concurrent 9 MB reports peak at
-  281 MB RSS; `mem_limit` is `384m`.
+  with a body over 16 KB** (or of unknown length) are read and handled at once, and **one address
+  holds at most one** of those slots: its other large requests queue behind its first, not in the
+  shared queue. The rest wait with their body unread, holding a socket rather than memory, and
+  reports without screenshots never wait. A declared length over 9 MB is refused at once. Once a
+  request has its slot, its body must arrive **within 60 seconds** (enough for 9 MB at about
+  1.2 Mbit/s); otherwise it is answered `408 request_timeout` and its connection closed, so a slow
+  or stalled sender cannot keep everyone else's screenshots waiting. Measured on a real server, 50
+  concurrent 9 MB reports peak at 281 MB RSS; `mem_limit` is `384m`.
 
 ## GitHub App
 

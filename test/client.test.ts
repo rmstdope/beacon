@@ -208,6 +208,13 @@ describe("Beacon client, against responses the real client cannot provoke", () =
     });
   });
 
+  it("reports a body that took too long to arrive as request_timeout", async () => {
+    expect(errorOf(await stubbed(errorResponse(408, "request_timeout")).report(bug))).toEqual({
+      code: "request_timeout",
+      message: "developer text for request_timeout",
+    });
+  });
+
   it("reports a request that never got a response as network", async () => {
     expect(errorOf(await stubbed(new TypeError("Failed to fetch")).report(bug)).code).toBe("network");
   });
