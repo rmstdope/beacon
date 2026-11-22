@@ -5,6 +5,8 @@ import { stripUnsafe } from "./text.js";
 export const MAX_SCREENSHOTS = 3;
 /** Decoded bytes per screenshot: 2 MiB. */
 export const MAX_SCREENSHOT_BYTES = 2 * 1024 * 1024;
+/** Decoded bytes of a save game: 512 KiB. */
+export const MAX_SAVE_BYTES = 512 * 1024;
 
 export const REPORT_TYPES = ["bug", "enhancement", "feature"] as const;
 export type ReportType = (typeof REPORT_TYPES)[number];
@@ -39,10 +41,17 @@ const ReportSchema = z.strictObject({
   appVersion: z.string().max(64).optional(),
   userAgent: z.string().max(512).optional(),
   screenshots: z.array(z.strictObject({ data: z.string() })).max(MAX_SCREENSHOTS, "at most 3").optional(),
+  save: z.strictObject({ data: z.string() }).optional(),
 });
 
-/** A report as validated: screenshots are decoded and cleaned, and absent when none were sent. */
-export type Report = Omit<z.infer<typeof ReportSchema>, "screenshots"> & { screenshots?: CleanImage[] };
+/**
+ * A report as validated: screenshots are decoded and cleaned, and absent when none were sent; a
+ * save is its bytes exactly as sent.
+ */
+export type Report = Omit<z.infer<typeof ReportSchema>, "screenshots" | "save"> & {
+  screenshots?: CleanImage[];
+  save?: Uint8Array;
+};
 
 /**
  * On failure, `field` is a schema field name, `body` or `unknown_key`: never text the caller chose,
@@ -104,6 +113,26 @@ function parseScreenshots(screenshots: { data: string }[]): CleanImage[] | Failu
   return images;
 }
 
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+/**
+ * Checks a save game (base64, then size, then UTF-8 JSON) and returns its bytes untouched: the
+ * maintainer must get the very save that was sent, so it is never re-serialised or cleaned.
+ */
+function parseSave({ data }: { data: string }): Uint8Array | Failure {
+  if (!isBase64(data)) return invalid("save", "save: not base64");
+  if (decodedLength(data) > MAX_SAVE_BYTES) {
+    return { ok: false, status: 413, error: "too_large", field: "save", message: "save: over 512 KB" };
+  }
+  const bytes = new Uint8Array(Buffer.from(data, "base64"));
+  try {
+    JSON.parse(utf8.decode(bytes));
+  } catch {
+    return { ok: false, status: 415, error: "unsupported_media_type", field: "save", message: "save: not JSON" };
+  }
+  return bytes;
+}
+
 /** Validates an untrusted request body. On failure, names the first offending field. */
 export function parseReport(input: unknown): ParseResult {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
@@ -119,9 +148,17 @@ export function parseReport(input: unknown): ParseResult {
     const field = String(issue?.path[0] ?? "body");
     return invalid(field, `${field}: ${issue?.message ?? "invalid"}`);
   }
-  const { screenshots, ...report } = result.data;
-  if (screenshots === undefined || screenshots.length === 0) return { ok: true, report };
-  const images = parseScreenshots(screenshots);
-  if (!Array.isArray(images)) return images;
-  return { ok: true, report: { ...report, screenshots: images } };
+  const { screenshots, save, ...fields } = result.data;
+  const report: Report = fields;
+  if (screenshots !== undefined && screenshots.length > 0) {
+    const images = parseScreenshots(screenshots);
+    if (!Array.isArray(images)) return images;
+    report.screenshots = images;
+  }
+  if (save !== undefined) {
+    const bytes = parseSave(save);
+    if (!(bytes instanceof Uint8Array)) return bytes;
+    report.save = bytes;
+  }
+  return { ok: true, report };
 }

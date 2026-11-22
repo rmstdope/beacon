@@ -34,6 +34,11 @@ export interface NewReport {
    * image is a `Blob`. Beacon checks the limits and refuses the whole report if one is broken.
    */
   screenshots?: Blob[];
+  /**
+   * The game's save, at most 512 KB of JSON: its text (sent as UTF-8) or a `Blob`. Beacon stores
+   * it exactly as sent and links it from the issue.
+   */
+  save?: Blob | string;
 }
 
 /**
@@ -159,6 +164,14 @@ export function createBeacon(options: BeaconOptions): Beacon {
           return { ok: false, error: { code: "invalid_report", field: "screenshots", message } };
         }
       }
+      let save: { data: string } | undefined;
+      if (report.save !== undefined) {
+        try {
+          save = { data: await base64(typeof report.save === "string" ? new Blob([report.save]) : report.save) };
+        } catch {
+          return { ok: false, error: { code: "invalid_report", field: "save", message: "save: could not be read" } };
+        }
+      }
       const body = {
         clientId: options.clientId,
         type: report.type,
@@ -168,6 +181,7 @@ export function createBeacon(options: BeaconOptions): Beacon {
         ...(options.appVersion === undefined ? {} : { appVersion: options.appVersion }),
         ...(userAgent ? { userAgent } : {}),
         ...(screenshots.length > 0 ? { screenshots } : {}),
+        ...(save === undefined ? {} : { save }),
       };
       let response: Response;
       try {

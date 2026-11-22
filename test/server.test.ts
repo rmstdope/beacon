@@ -265,7 +265,7 @@ describe("POST /v1/reports with screenshots", () => {
     const res = await post(app, { ...report, screenshots: [shot(withText), shot(tinyJpeg()), shot(tinyWebp())] });
     expect(res.status).toBe(201);
     const filed = filer.filed[0];
-    expect(filed?.screenshots).toEqual([
+    expect(filed?.files).toEqual([
       { path: "2026-11-22-7f3a9c/1.png", bytes: png() },
       { path: "2026-11-22-7f3a9c/2.jpg", bytes: tinyJpeg() },
       { path: "2026-11-22-7f3a9c/3.webp", bytes: tinyWebp() },
@@ -280,7 +280,7 @@ describe("POST /v1/reports with screenshots", () => {
     const { app, filer } = setup();
     await post(app, { ...report, screenshots: [shot(png())] });
     await post(app, { ...report, screenshots: [shot(png())] });
-    const paths = filer.filed.map((f) => f.screenshots[0]?.path ?? "");
+    const paths = filer.filed.map((f) => f.files[0]?.path ?? "");
     for (const path of paths) expect(path).toMatch(/^\d{4}-\d{2}-\d{2}-[0-9a-f]{6}\/1\.png$/);
     expect(paths[0]).not.toBe(paths[1]);
   });
@@ -288,7 +288,7 @@ describe("POST /v1/reports with screenshots", () => {
   it("files a report without screenshots exactly as before, with nothing to store", async () => {
     const { app, filer } = setup();
     expect((await post(app, report)).status).toBe(201);
-    expect(filer.filed[0]?.screenshots).toEqual([]);
+    expect(filer.filed[0]?.files).toEqual([]);
     expect(filer.filed[0]?.issue.body).not.toContain("### Screenshot");
   });
 
@@ -297,7 +297,7 @@ describe("POST /v1/reports with screenshots", () => {
     const big = shot(bigPng(2 * MiB));
     const res = await post(app, { ...report, screenshots: [big, big, big] });
     expect(res.status).toBe(201);
-    expect(filer.filed[0]?.screenshots).toHaveLength(3);
+    expect(filer.filed[0]?.files).toHaveLength(3);
   });
 
   it("refuses bad screenshots with the documented status and message, filing and storing nothing", async () => {
@@ -336,6 +336,84 @@ describe("POST /v1/reports with screenshots", () => {
     expect(res.status).toBe(502);
     expect((await errorOf(res)).error).toBe("upstream_failed");
     expect(filer.filed).toHaveLength(0);
+  });
+});
+
+describe("POST /v1/reports with a save game", () => {
+  const SAVE_TEXT = '{ "v": 1, "root": "SECRET-SAVE-TEXT K\u00e5re" }\n';
+  const save = (text: string | Uint8Array = SAVE_TEXT) => ({ data: Buffer.from(text).toString("base64") });
+
+  it("stores the save as save.json beside the screenshots, byte for byte, and links it in the issue", async () => {
+    const { app, filer, logs } = setup({ now: () => NOV_22, randomHex: () => "7f3a9c" });
+    const res = await post(app, { ...report, screenshots: [shot(png())], save: save() });
+    expect(res.status).toBe(201);
+    const filed = filer.filed[0];
+    expect(filed?.files).toEqual([
+      { path: "2026-11-22-7f3a9c/1.png", bytes: png() },
+      { path: "2026-11-22-7f3a9c/save.json", bytes: new Uint8Array(Buffer.from(SAVE_TEXT)) },
+    ]);
+    expect(filed?.issue.body).toContain("![Screenshot from the user](https://github.com/stored/2026-11-22-7f3a9c/1.png?raw=true)");
+    expect(filed?.issue.body).toContain("### Save game\n\n[save.json](https://github.com/stored/2026-11-22-7f3a9c/save.json) (1 KB),");
+    expect(filed?.issue.body).not.toContain("SECRET-SAVE-TEXT");
+    const line = logs.find((entry) => entry.includes('"event":"report.filed"')) ?? "";
+    expect(JSON.parse(line)).toMatchObject({ screenshots: 1, save: true });
+    expect(logs.join("\n")).not.toContain("SECRET-SAVE-TEXT");
+  });
+
+  it("stores a save sent without screenshots", async () => {
+    const { app, filer } = setup({ now: () => NOV_22, randomHex: () => "7f3a9c" });
+    expect((await post(app, { ...report, save: save() })).status).toBe(201);
+    expect(filer.filed[0]?.files.map((f) => f.path)).toEqual(["2026-11-22-7f3a9c/save.json"]);
+    expect(filer.filed[0]?.issue.body).not.toContain("### Screenshot");
+    expect(filer.filed[0]?.issue.body).toContain("### Save game");
+  });
+
+  it("logs save false and links no save when none is sent", async () => {
+    const { app, filer, logs } = setup();
+    await post(app, report);
+    expect(filer.filed[0]?.issue.body).not.toContain("Save game");
+    expect(JSON.parse(logs.find((entry) => entry.includes("report.filed")) ?? "{}")).toMatchObject({ save: false });
+  });
+
+  it("accepts the largest valid report: three 2 MB screenshots, a 512 KB save and the longest text", async () => {
+    const { app, filer } = setup();
+    const big = shot(bigPng(2 * MiB));
+    const largest = {
+      ...report,
+      title: "t".repeat(120),
+      description: "d".repeat(5_000),
+      pageUrl: "https://retroquest.rmstdope.eu/" + "p".repeat(2_000),
+      appVersion: "v".repeat(64),
+      userAgent: "u".repeat(512),
+      screenshots: [big, big, big],
+      save: save(`"${"x".repeat(512 * 1024 - 2)}"`),
+    };
+    expect(JSON.stringify(largest).length).toBeLessThan(9 * MiB);
+    expect((await post(app, largest)).status).toBe(201);
+    expect(filer.filed[0]?.files).toHaveLength(4);
+  });
+
+  it("refuses a bad save with the documented status and message, filing and storing nothing", async () => {
+    const cases: [unknown, number, string, string][] = [
+      [{ data: "%%%%" }, 400, "invalid_report", "save: not base64"],
+      [save(`"${"x".repeat(512 * 1024 - 1)}"`), 413, "too_large", "save: over 512 KB"],
+      [save("not json"), 415, "unsupported_media_type", "save: not JSON"],
+    ];
+    for (const [bad, status, error, message] of cases) {
+      const { app, filer, logs } = setup();
+      const res = await post(app, { ...report, screenshots: [shot(png())], save: bad });
+      expect(res.status, message).toBe(status);
+      expect(await errorOf(res), message).toEqual({ error, message, field: "save" });
+      expect(filer.calls, message).toBe(0);
+      expect(logs.join("\n"), message).toContain('"field":"save"');
+    }
+  });
+
+  it("checks the client and origin before storing a save", async () => {
+    const { app, filer } = setup();
+    expect((await post(app, { ...report, clientId: "nope", save: save() })).status).toBe(403);
+    expect((await post(app, { ...report, save: save() }, { origin: NESER })).status).toBe(403);
+    expect(filer.calls).toBe(0);
   });
 });
 

@@ -2,22 +2,25 @@ import { createSign } from "node:crypto";
 import type { RepoRef } from "./config.js";
 import type { Issue } from "./issue.js";
 
-/** A screenshot to store: `path` is Beacon's own, such as `2026-11-22-7f3a9c/1.png`. */
-export interface ScreenshotFile {
+/**
+ * A file to store with a report, a screenshot or its save game: `path` is Beacon's own, such as
+ * `2026-11-22-7f3a9c/1.png`.
+ */
+export interface StoredFile {
   path: string;
   bytes: Uint8Array;
 }
 
-/** Makes the issue once the screenshots' addresses are known, given in the order the files were. */
-export type IssueBuilder = (screenshotUrls: string[]) => Issue;
+/** Makes the issue once the stored files' addresses are known, given in the order the files were. */
+export type IssueBuilder = (urls: string[]) => Issue;
 
 /** Files issues in a repository. The seam the HTTP layer depends on. */
 export interface IssueFiler {
   /**
-   * Stores the screenshots, if any, then files the issue and returns its number. Throws a
-   * GitHubError on any GitHub failure; if storing fails, no issue is filed.
+   * Stores the files, if any, then files the issue and returns its number. Throws a GitHubError
+   * on any GitHub failure; if storing fails, no issue is filed.
    */
-  fileIssue(repo: RepoRef, issue: Issue | IssueBuilder, screenshots?: readonly ScreenshotFile[]): Promise<number>;
+  fileIssue(repo: RepoRef, issue: Issue | IssueBuilder, files?: readonly StoredFile[]): Promise<number>;
   /** Whether the App is installed on the repository. */
   isInstalled(repo: RepoRef): Promise<boolean>;
 }
@@ -43,11 +46,11 @@ const LABEL_STYLE: Record<string, { color: string; description: string }> = {
   "via-beacon": { color: "5319e7", description: "Filed by Beacon for an anonymous user; untrusted text" },
 };
 
-/** The never-merged branch each app repository keeps its reports' screenshots on. */
+/** The never-merged branch each app repository keeps its reports' screenshots and saves on. */
 export const SCREENSHOT_BRANCH = "beacon-screenshots";
 
 /** `[skip ci]` keeps the app's GitHub Actions from running on every report. */
-const SCREENSHOT_COMMIT_MESSAGE = "Screenshots for a Beacon report [skip ci]";
+const FILES_COMMIT_MESSAGE = "Files for a Beacon report [skip ci]";
 
 /** Attempts at moving the branch when other reports keep moving it first. */
 const BRANCH_ATTEMPTS = 3;
@@ -113,10 +116,10 @@ export class GitHubAppFiler implements IssueFiler {
     this.#timeoutMs = options.timeoutMs ?? 8_000;
   }
 
-  async fileIssue(repo: RepoRef, build: Issue | IssueBuilder, screenshots: readonly ScreenshotFile[] = []): Promise<number> {
+  async fileIssue(repo: RepoRef, build: Issue | IssueBuilder, files: readonly StoredFile[] = []): Promise<number> {
     const signal = AbortSignal.timeout(this.#timeoutMs);
     const token = await this.#installationToken(repo, signal);
-    const urls = screenshots.length > 0 ? await this.#storeScreenshots(repo, screenshots, token, signal) : [];
+    const urls = files.length > 0 ? await this.#storeFiles(repo, files, token, signal) : [];
     const issue = typeof build === "function" ? build(urls) : build;
     for (const label of issue.labels) await this.#ensureLabel(repo, label, token, signal);
     const res = await this.#request("POST", `/repos/${repoKey(repo)}/issues`, `token ${token}`, signal, issue);
@@ -127,13 +130,13 @@ export class GitHubAppFiler implements IssueFiler {
   }
 
   /**
-   * Commits the screenshots to the screenshot branch in one commit, through the Git Data API, and
-   * returns their addresses pinned to that commit. A branch that does not exist yet starts with a
-   * commit of its own, sharing no history with the default branch.
+   * Commits the files to the screenshot branch in one commit, through the Git Data API, and
+   * returns their blob-page addresses pinned to that commit. A branch that does not exist yet
+   * starts with a commit of its own, sharing no history with the default branch.
    */
-  async #storeScreenshots(
+  async #storeFiles(
     repo: RepoRef,
-    files: readonly ScreenshotFile[],
+    files: readonly StoredFile[],
     token: string,
     signal: AbortSignal,
   ): Promise<string[]> {
@@ -147,7 +150,7 @@ export class GitHubAppFiler implements IssueFiler {
         files.map(async (file) => {
           const content = Buffer.from(file.bytes).toString("base64");
           const res = await this.#request("POST", `${git}/blobs`, auth, signal, { content, encoding: "base64" });
-          return this.#sha(res, 201, "storing a screenshot", repo, signal);
+          return this.#sha(res, 201, "storing a file", repo, signal);
         }),
       );
       const shas = blobs;
@@ -156,13 +159,13 @@ export class GitHubAppFiler implements IssueFiler {
         ...(head ? { base_tree: head.tree } : {}),
         tree,
       });
-      const treeSha = await this.#sha(treeRes, 201, "creating the screenshot tree", repo, signal);
+      const treeSha = await this.#sha(treeRes, 201, "creating the files' tree", repo, signal);
       const commitRes = await this.#request("POST", `${git}/commits`, auth, signal, {
-        message: SCREENSHOT_COMMIT_MESSAGE,
+        message: FILES_COMMIT_MESSAGE,
         tree: treeSha,
         parents: head ? [head.commit] : [],
       });
-      const commit = await this.#sha(commitRes, 201, "creating the screenshot commit", repo, signal);
+      const commit = await this.#sha(commitRes, 201, "creating the files' commit", repo, signal);
       const moved = head
         ? await this.#request("PATCH", `${git}/refs/heads/${SCREENSHOT_BRANCH}`, auth, signal, { sha: commit, force: false })
         : await this.#request("POST", `${git}/refs`, auth, signal, { ref: `refs/heads/${SCREENSHOT_BRANCH}`, sha: commit });
@@ -173,7 +176,7 @@ export class GitHubAppFiler implements IssueFiler {
       }
       await this.#expect(moved, head ? 200 : 201, `moving ${SCREENSHOT_BRANCH}`, repo);
       await discard(moved);
-      return files.map((file) => `https://github.com/${repoKey(repo)}/blob/${commit}/${file.path}?raw=true`);
+      return files.map((file) => `https://github.com/${repoKey(repo)}/blob/${commit}/${file.path}`);
     }
   }
 

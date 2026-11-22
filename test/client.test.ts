@@ -136,7 +136,7 @@ describe("Beacon client, against the real app", () => {
       { data: Buffer.from(png()).toString("base64") },
       { data: Buffer.from(tinyJpeg()).toString("base64") },
     ]);
-    expect(filer.filed[0]?.screenshots.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
+    expect(filer.filed[0]?.files.map((f) => f.path.split("/")[1])).toEqual(["1.png", "2.jpg"]);
   });
 
   it("encodes every byte value of a large screenshot exactly", async () => {
@@ -162,6 +162,37 @@ describe("Beacon client, against the real app", () => {
     await beacon.report({ ...bug, screenshots: [] });
     expect(requests[0]?.body).not.toHaveProperty("screenshots");
     expect(requests[1]?.body).not.toHaveProperty("screenshots");
+  });
+
+  it("sends a save given as a string, base64 of its UTF-8, and the app stores it as sent", async () => {
+    const { beacon, filer, requests } = setup();
+    const text = '{ "v": 1, "root": "K\u00e5re\u2019s lantern" }';
+    expect((await beacon.report({ ...bug, save: text })).ok).toBe(true);
+    expect(requests[0]?.body.save).toEqual({ data: Buffer.from(text, "utf8").toString("base64") });
+    const stored = filer.filed[0]?.files.find((f) => f.path.endsWith("/save.json"));
+    expect(Buffer.from(stored?.bytes ?? [])).toEqual(Buffer.from(text, "utf8"));
+  });
+
+  it("sends a save given as a Blob byte for byte", async () => {
+    const { beacon, requests } = setup();
+    const bytes = Buffer.from('{"slot":1}\r\n');
+    await beacon.report({ ...bug, save: new Blob([bytes], { type: "application/json" }) });
+    expect(requests[0]?.body.save).toEqual({ data: bytes.toString("base64") });
+  });
+
+  it("reports a save that cannot be read as invalid_report, sending nothing", async () => {
+    const { beacon, requests } = setup();
+    const unreadable = new Blob(["{}"]);
+    unreadable.arrayBuffer = () => Promise.reject(new DOMException("gone", "NotReadableError"));
+    const result = await beacon.report({ ...bug, save: unreadable });
+    expect(errorOf(result)).toEqual({ code: "invalid_report", field: "save", message: "save: could not be read" });
+    expect(requests).toHaveLength(0);
+  });
+
+  it("sends no save field when there is none", async () => {
+    const { beacon, requests } = setup();
+    await beacon.report(bug);
+    expect(requests[0]?.body).not.toHaveProperty("save");
   });
 
   it("reports an invalid report as invalid_report naming the field", async () => {

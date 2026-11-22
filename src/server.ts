@@ -4,11 +4,11 @@ import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { clientIp, rateLimitKey } from "./client-ip.js";
 import type { Client } from "./config.js";
-import { GitHubError, type IssueFiler, type ScreenshotFile } from "./github.js";
+import { GitHubError, type IssueFiler, type StoredFile } from "./github.js";
 import { buildIssue } from "./issue.js";
 import type { FixedWindowLimiter } from "./rate-limit.js";
-import type { CleanImage, ImageType } from "./image.js";
-import { parseReport } from "./report.js";
+import type { ImageType } from "./image.js";
+import { parseReport, type Report } from "./report.js";
 
 export type LogEntry = { event: string } & Record<string, string | number | boolean>;
 
@@ -30,7 +30,7 @@ export interface AppOptions {
   bodyDeadlineMs?: number;
 }
 
-/** Three 2 MiB screenshots, base64-encoded, plus the text. */
+/** Three 2 MiB screenshots and a 512 KiB save, base64-encoded, plus the text. */
 const MAX_BODY_BYTES = 9 * 1024 * 1024;
 const MAX_USER_AGENT = 512;
 
@@ -118,13 +118,18 @@ async function readBody(stream: ReadableStream<Uint8Array> | null, maxBytes: num
 
 const EXTENSIONS: Record<ImageType, string> = { png: "png", jpeg: "jpg", webp: "webp" };
 
-/** `YYYY-MM-DD-<6 hex>/<N>.<ext>`, N counting from 1 in the order sent. */
-function screenshotFiles(images: readonly CleanImage[], now: number, code: string): ScreenshotFile[] {
+/**
+ * A report's files in its folder `YYYY-MM-DD-<6 hex>`: the screenshots as `<N>.<ext>`, N counting
+ * from 1 in the order sent, then the save, if any, as `save.json`.
+ */
+function reportFiles(report: Report, now: number, code: string): StoredFile[] {
   const folder = `${new Date(now).toISOString().slice(0, 10)}-${code}`;
-  return images.map((image, index) => ({
+  const files = (report.screenshots ?? []).map((image, index) => ({
     path: `${folder}/${String(index + 1)}.${EXTENSIONS[image.type]}`,
     bytes: image.bytes,
   }));
+  if (report.save !== undefined) files.push({ path: `${folder}/save.json`, bytes: report.save });
+  return files;
 }
 
 function fail(
@@ -282,15 +287,23 @@ export function createApp(options: AppOptions): Hono<Env> {
       }
 
       const started = now();
-      const images = report.screenshots ?? [];
-      const files = images.length > 0 ? screenshotFiles(images, started, randomHex()) : [];
+      const screenshots = report.screenshots?.length ?? 0;
+      const save = report.save;
+      const files = screenshots > 0 || save !== undefined ? reportFiles(report, started, randomHex()) : [];
+      // The filer answers one address per file, in order: the screenshots', then the save's.
+      const build = (urls: string[]) => {
+        const saveUrl = urls[screenshots];
+        const stored = save === undefined || saveUrl === undefined ? undefined : { url: saveUrl, bytes: save.length };
+        return buildIssue(report, urls.slice(0, screenshots), stored);
+      };
       try {
-        const reference = await filer.fileIssue(client.repo, (urls) => buildIssue(report, urls), files);
+        const reference = await filer.fileIssue(client.repo, build, files);
         log({
           event: "report.filed",
           client: report.clientId,
           type: report.type,
-          screenshots: files.length,
+          screenshots,
+          save: save !== undefined,
           issue: reference,
           githubMs: now() - started,
         });
