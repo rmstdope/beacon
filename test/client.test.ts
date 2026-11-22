@@ -145,8 +145,9 @@ describe("Beacon client, against the real app", () => {
     expect(errorOf(await beacon.report({ ...bug, title: "x" }))).toMatchObject({ code: "invalid_report", field: "title" });
   });
 
-  it("reports a refused origin as forbidden", async () => {
-    const { beacon } = setup({ origin: "https://evil.example" });
+  // A refused origin gets no CORS headers, so a browser's fetch rejects (network); this is the 403 it can see.
+  it("reports an unknown client ID as forbidden", async () => {
+    const { beacon } = setup({ client: { clientId: "unknown" } });
     expect(errorOf(await beacon.report(bug)).code).toBe("forbidden");
   });
 
@@ -156,10 +157,10 @@ describe("Beacon client, against the real app", () => {
   });
 
   it("reports a rate limit as rate_limited with the seconds to wait", async () => {
-    const limiter = new FixedWindowLimiter({ limit: 1, windowMs: 60_000, now: () => 0 });
+    const limiter = new FixedWindowLimiter({ limit: 1, windowMs: 600_000, now: () => 0 });
     const { beacon } = setup({ app: { clientLimiter: limiter } });
     expect((await beacon.report(bug)).ok).toBe(true);
-    expect(errorOf(await beacon.report(bug))).toMatchObject({ code: "rate_limited", retryAfterSeconds: 60 });
+    expect(errorOf(await beacon.report(bug))).toMatchObject({ code: "rate_limited", retryAfterSeconds: 600 });
   });
 
   it("reports a GitHub failure as upstream_failed", async () => {

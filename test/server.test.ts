@@ -210,6 +210,8 @@ describe("POST /v1/reports", () => {
     expect(res.status).toBe(429);
     expect((await errorOf(res)).error).toBe("rate_limited");
     expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+    // Retry-After is not CORS-safelisted: without this a browser hides it from the frontend.
+    expect(res.headers.get("access-control-expose-headers")).toContain("Retry-After");
     expect((await post(app, report, { "x-forwarded-for": "203.0.113.8" })).status).toBe(201);
   });
 

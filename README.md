@@ -8,7 +8,8 @@ The design, the HTTP API and the reasoning behind both are in [docs/design.md](d
 
 ## Sending a report from a frontend
 
-Copy [src/client.ts](src/client.ts) into the frontend (it has no imports or dependencies), then:
+Copy [src/client.ts](src/client.ts) into the frontend, for example as `beacon-client.ts` (it has no
+imports or dependencies), then:
 
 ```ts
 import { createBeacon } from "./beacon-client";

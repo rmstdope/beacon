@@ -139,7 +139,8 @@ const result = await beacon.report({ type: "bug", title, description });
   `Content-Type`, and sets `Access-Control-Max-Age: 600`.
 - A request is allowed only when its `Origin` header exactly matches one of the client's
   configured origins. Beacon echoes that origin in `Access-Control-Allow-Origin` and sends
-  `Vary: Origin`. Credentials are never allowed.
+  `Vary: Origin`, and exposes `Retry-After` with `Access-Control-Expose-Headers` (it is not
+  CORS-safelisted, so a browser would otherwise hide it). Credentials are never allowed.
 - A `POST` with no `Origin` header is rejected with `403`. Every browser sends one on a
   cross-origin request, so this only turns away the laziest scripts. It is not a security
   boundary, which is why the limits below exist.

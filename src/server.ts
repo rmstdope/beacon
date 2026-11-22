@@ -51,6 +51,8 @@ export function createApp(options: AppOptions): Hono<Env> {
     if (origin === undefined || !allOrigins.has(origin)) return undefined;
     c.header("Access-Control-Allow-Origin", origin);
     c.header("Vary", "Origin");
+    // Not CORS-safelisted: without this a browser hides a 429's Retry-After from the frontend.
+    c.header("Access-Control-Expose-Headers", "Retry-After");
     return origin;
   }
 
