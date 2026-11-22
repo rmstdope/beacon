@@ -55,8 +55,8 @@ pushes and checkouts run the tracked hooks in `.beads/hooks`, as this clone does
   library and `fetch` to a dependency; this service holds a write credential.
 - **Source files are plain text you can see.** Write invisible or direction-changing characters
   (zero-width spaces, bidirectional overrides, NBSP) as `\u` escapes, never literally;
-  `test/source-hygiene.test.ts` fails on any tracked file that contains one. Tools have written
-  them literally here before.
+  `test/source-hygiene.test.ts` fails on any tracked file that contains one, staged or in the
+  working tree, or whose name does. Tools have written them literally here before.
 - **Report text is untrusted.** Never log report text, client IPs or key material; log field
   names, outcomes and the client ID. Never put user-chosen strings (such as unknown JSON keys) in
   logs.

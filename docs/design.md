@@ -209,7 +209,8 @@ If a label does not exist in the repository, Beacon creates it once and remember
   including bidirectional overrides, zero-width characters and the tag block. Tag characters are
   invisible to people but read by language models, so they could hide instructions from
   maintainers while steering an agent. The cost is that emoji joined with U+200D come apart.
-- Source files must contain no literal invisible characters; a test enforces it.
+- Tracked files must contain no literal invisible characters, in their names, their staged content or
+  their working copy; a test enforces it.
 
 AI agents that read these issues treat them as untrusted too. Cerebro's `user-feedback` and
 `orchestrator` agents do so for every issue, and skip reporter-facing comments on `via-beacon` issues
