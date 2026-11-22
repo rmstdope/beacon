@@ -117,7 +117,9 @@ function cleanJpeg(data: Buffer): Uint8Array | undefined {
       sawScan = true;
       end = scanEnd(data, end);
     }
-    if (keepJpegSegment(marker, payload)) {
+    if (marker === 0xe0 && keepJpegSegment(marker, payload) && payload.length > JFIF_HEADER) {
+      kept.push(jfifWithoutThumbnail(payload));
+    } else if (keepJpegSegment(marker, payload)) {
       kept.push(data.subarray(markerAt, end));
     } else if (marker === APP1 && orientation === undefined) {
       const found = exifOrientation(payload);
@@ -138,6 +140,20 @@ function keepJpegSegment(marker: number, payload: Buffer): boolean {
   if (marker === 0xe2) return ascii(payload, 0, 12) === "ICC_PROFILE\0";
   if (marker === 0xee) return ascii(payload, 0, 5) === "Adobe";
   return false;
+}
+
+/** `JFIF\0`, version, units, X and Y density, thumbnail width and height. */
+const JFIF_HEADER = 14;
+
+/**
+ * The JFIF header alone, its thumbnail size set to 0×0. An embedded thumbnail can show what the
+ * picture looked like before it was cropped.
+ */
+function jfifWithoutThumbnail(payload: Buffer): Buffer {
+  const header = Buffer.from(payload.subarray(0, JFIF_HEADER));
+  header[12] = 0;
+  header[13] = 0;
+  return Buffer.concat([Buffer.from([0xff, 0xe0, 0, JFIF_HEADER + 2]), header]);
 }
 
 /** Where entropy-coded data after a scan header ends: at the next marker that is not a restart. */

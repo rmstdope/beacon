@@ -131,6 +131,21 @@ describe("cleanImage: JPEG", () => {
     expect(Buffer.from(out.subarray(out.length - SCAN.length - 2))).toEqual(Buffer.from([...SCAN, 0xff, 0xd9]));
   });
 
+  it("drops a thumbnail embedded in the JFIF segment, keeping its header", () => {
+    const thumbnail = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xf1]; // 2×1 RGB
+    const withThumbnail = bytes(
+      [0xff, 0xd8],
+      segment(0xe0, bytes("JFIF\0\x01\x02\x01\0\x48\0\x48", [2, 1], thumbnail)),
+      jpeg().subarray(2 + 18),
+    );
+    const out = cleanImage(withThumbnail)?.bytes ?? new Uint8Array();
+    expect(Buffer.from(out.subarray(0, 2 + 18))).toEqual(
+      Buffer.from(bytes([0xff, 0xd8], segment(0xe0, "JFIF\0\x01\x02\x01\0\x48\0\x48\0\0"))),
+    );
+    expect(Buffer.from(out).includes(Buffer.from(thumbnail))).toBe(false);
+    expect(Buffer.from(out.subarray(2 + 18))).toEqual(Buffer.from(jpeg().subarray(2 + 18)));
+  });
+
   it("keeps a non-default orientation as an EXIF segment holding nothing else", () => {
     for (const littleEndian of [false, true]) {
       const out = cleanImage(jpeg(segment(0xe1, exif(6, littleEndian))))?.bytes ?? new Uint8Array();
