@@ -469,6 +469,29 @@ describe("GitHubAppFiler.fileIssue with screenshots", () => {
     expect(seen).toEqual([[]]);
   });
 
+  it("uploads the screenshots side by side, not one after another", async () => {
+    const git = gitRoutes();
+    let arrived = 0;
+    const both = Promise.withResolvers<undefined>();
+    const blob = git.routes[`POST ${REPO_PATH}/git/blobs`];
+    const gh = fakeGitHub({
+      ...git.routes,
+      // Each blob upload answers only once both are in flight: one after another, it never would.
+      [`POST ${REPO_PATH}/git/blobs`]: async (call) => {
+        if (++arrived === files.length) both.resolve(undefined);
+        await both.promise;
+        return blob ? blob(call) : json(500, {});
+      },
+    });
+    const f = new GitHubAppFiler({ appId: "1", privateKeyPem, fetch: gh.fetch, timeoutMs: 500 });
+    expect(await f.fileIssue(repo, builder().build, files)).toBe(17);
+    const tree = gh.calls.find((c) => c.path.endsWith("/git/trees"))?.body as { tree: { path: string; sha: string }[] };
+    expect(tree.tree.map((entry) => [entry.path, entry.sha])).toEqual([
+      ["2026-11-22-7f3a9c/1.png", "b0b1"],
+      ["2026-11-22-7f3a9c/2.jpg", "b0b2"],
+    ]);
+  });
+
   it("shares the report's one timeout between storing and filing", async () => {
     const gh = fakeGitHub(gitRoutes().routes);
     // Storing takes about 140 ms and the issue 100 ms: each fits in 200 ms alone, not together.

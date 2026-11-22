@@ -139,19 +139,19 @@ export class GitHubAppFiler implements IssueFiler {
   ): Promise<string[]> {
     const git = `/repos/${repoKey(repo)}/git`;
     const auth = `token ${token}`;
-    const blobs: string[] = [];
-    let blobsMade = false;
+    let blobs: string[] | undefined;
     for (let attempt = 1; ; attempt++) {
       const head = await this.#branchHead(repo, token, signal);
-      if (!blobsMade) {
-        for (const file of files) {
+      // Side by side: three 2 MB uploads one after another would spend much of the 8 s budget.
+      blobs ??= await Promise.all(
+        files.map(async (file) => {
           const content = Buffer.from(file.bytes).toString("base64");
           const res = await this.#request("POST", `${git}/blobs`, auth, signal, { content, encoding: "base64" });
-          blobs.push(await this.#sha(res, 201, "storing a screenshot", repo, signal));
-        }
-        blobsMade = true;
-      }
-      const tree = files.map((file, i) => ({ path: file.path, mode: "100644", type: "blob", sha: blobs[i] }));
+          return this.#sha(res, 201, "storing a screenshot", repo, signal);
+        }),
+      );
+      const shas = blobs;
+      const tree = files.map((file, i) => ({ path: file.path, mode: "100644", type: "blob", sha: shas[i] }));
       const treeRes = await this.#request("POST", `${git}/trees`, auth, signal, {
         ...(head ? { base_tree: head.tree } : {}),
         tree,
