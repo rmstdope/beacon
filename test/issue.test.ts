@@ -125,4 +125,27 @@ describe("buildIssue", () => {
       [`![Screenshot 3 of 3 from the user](${URL3})`, "Screenshot 3 of 3", "### Context"].join("\n\n"),
     );
   });
+
+  const SAVE = "https://github.com/rmstdope/retroquest/blob/abc/2026-11-22-7f3a9c/save.json";
+  const saveLine = (size: string) =>
+    `[save.json](${SAVE}) (${size}), the game's state sent with this report. ` +
+    "Like the text above, it comes from the user and has not been verified.";
+
+  it("adds a Save game section linking the stored save, between Screenshots and Context", () => {
+    expect(buildIssue(report, [URL1], { url: SAVE, bytes: 49_159 }).body).toContain(
+      [`![Screenshot from the user](${URL1})`, "### Save game", saveLine("49 KB"), "### Context"].join("\n\n"),
+    );
+    expect(buildIssue(report, [], { url: SAVE, bytes: 10 }).body).toContain(
+      ["```", "### Save game", saveLine("1 KB"), "### Context"].join("\n\n"),
+    );
+  });
+
+  it("rounds the save's size up to whole KB of 1,024 bytes", () => {
+    const size = (bytes: number) => /\((\d+ KB)\)/.exec(buildIssue(report, [], { url: SAVE, bytes }).body)?.[1];
+    expect([1, 1024, 1025, 512 * 1024].map(size)).toEqual(["1 KB", "1 KB", "2 KB", "512 KB"]);
+  });
+
+  it("shows no save section without a save", () => {
+    expect(buildIssue(report, [URL1]).body).not.toContain("Save game");
+  });
 });
