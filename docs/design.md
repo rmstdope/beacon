@@ -31,7 +31,7 @@ Non-goals, for now:
 | HTTP | Hono | Small, typed, built on Web-standard `Request` and `Response`, which makes handlers easy to test |
 | Validation | zod | One schema gives both the runtime check and the TypeScript type |
 | GitHub access | REST API through `fetch`, authenticated as a GitHub App by about 60 lines of `node:crypto` (JWT signing and token caching) | Creating an issue is one REST call. No `gh` binary and no Octokit dependency tree in a service that holds a write token |
-| GitHub identity | One GitHub App, `beacon`, with the issues write permission only, installed on the target repositories | Least privilege, short-lived tokens, issues appear as `beacon[bot]`, nothing tied to a person's account |
+| GitHub identity | One GitHub App, `rmstdope-beacon`, with the issues write permission only, installed on the target repositories | Least privilege, short-lived tokens, issues appear as `rmstdope-beacon[bot]`, nothing tied to a person's account |
 | Client authentication | A public client ID per frontend, checked together with its allowed origins | A browser cannot keep a secret, so the ID chooses the target, and the origin check plus limits bound abuse |
 | Spam control | Origin allowlist, in-memory rate limits, size caps. No CAPTCHA | Spam is a cleanup chore, not an incident |
 | Configuration | Environment variables from the protected settings file | Matches rmstdope-infra. Adding a client is an edit and a restart |
@@ -240,7 +240,7 @@ mode `0600`). Beacon validates everything at start-up and exits with a clear mes
 
 | Variable | Example | Meaning |
 |---|---|---|
-| `GITHUB_APP_ID` | `1234567` | The `beacon` App's ID |
+| `GITHUB_APP_ID` | `1234567` | The `rmstdope-beacon` App's ID |
 | `GITHUB_APP_PRIVATE_KEY_BASE64` | `LS0tLS1CRUdJTi...` | The App's PEM private key, base64-encoded, because Docker env files cannot hold multi-line values |
 | `BEACON_CLIENTS` | see below | JSON object: client ID → target repository and allowed origins |
 | `PORT` | `8080` | Listen port. Defaults to `8080` |
@@ -315,12 +315,17 @@ src/
   issue.ts         # report -> sanitized issue title, body, labels (pure)
   github.ts        # GitHub App auth, installation lookup, label creation, issue creation
   rate-limit.ts    # fixed-window in-memory limiter (clock injected)
-  client-ip.ts     # rightmost X-Forwarded-For entry
-test/              # Vitest, mirrors src/
+  client-ip.ts     # rightmost X-Forwarded-For entry; IPv6 rate-limit keys by /64
+  text.ts          # strips control and format characters
+test/              # Vitest, mirrors src/, plus source-hygiene.test.ts
 deploy/            # rmstdope-infra bundle (app.json, compose.json, route.caddy) and smoke-test.sh
 docs/design.md     # this file
+CLAUDE.md          # instructions for the cerebro agent fleet
 Dockerfile
 .github/workflows/ci.yml
+.cerebro/          # cerebro harness: the submodule (.cerebro/cerebro) and project declarations
+.claude/, .github/agents|hooks|skills/   # links into the harness
+.beads/            # bead board config and git hooks (the board itself syncs through Dolt)
 ```
 
 ## Testing
@@ -341,4 +346,3 @@ Dockerfile
   private `beacon-attachments` repository. Beacon commits each image there and links it from the
   issue. Capture method (file picker, `getDisplayMedia`, DOM rendering) to be decided at the same time.
 - **Client SDK or drop-in widget.**
-- **Mounting cerebro** in this repository, once the basics above are built.

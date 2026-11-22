@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -23,6 +23,9 @@ describe("tracked files", () => {
     const offenders = paths.filter((path) => {
       let content: Buffer;
       try {
+        // Symlinks and submodules (git lists a submodule as one path) are not file contents here:
+        // a link's target is scanned at its own path, a submodule by its own repository.
+        if (!lstatSync(path).isFile()) return false;
         content = readFileSync(path);
       } catch (error) {
         // A tracked file deleted in the working tree has nothing to scan; anything else is a failure.
