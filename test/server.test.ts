@@ -339,6 +339,73 @@ describe("POST /v1/reports with screenshots", () => {
   });
 });
 
+describe("POST /v1/reports, large bodies in flight", () => {
+  const sized = (body: unknown) => {
+    const text = JSON.stringify(body);
+    return { text, headers: { "content-length": String(Buffer.byteLength(text)) } };
+  };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
+  /** Holds the filer's calls until `release` is called. */
+  function hold(filer: ReturnType<typeof setup>["filer"]) {
+    const { promise, resolve } = Promise.withResolvers<undefined>();
+    filer.hold = promise.then(() => undefined);
+    return () => {
+      resolve(undefined);
+    };
+  }
+  const statuses = (pending: (Response | Promise<Response>)[]) => Promise.all(pending.map(async (p) => (await p).status));
+
+  it("reads at most the configured number of large bodies at once; the rest wait, then succeed", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 2 });
+    const release = hold(filer);
+    const large = sized({ ...report, screenshots: [shot(bigPng(100_000))] });
+    const pending = [1, 2, 3, 4].map((i) => post(app, large.text, { ...large.headers, "x-forwarded-for": `203.0.113.${String(i)}` }));
+    await tick();
+    expect(filer.inFlight).toBe(2);
+    expect(filer.calls).toBe(2);
+
+    filer.hold = undefined; // the two in flight stay held; new calls are not
+    const small = sized(report);
+    const quick = await post(app, small.text, { ...small.headers, "x-forwarded-for": "198.51.100.1" });
+    expect(quick.status).toBe(201);
+    filer.maxInFlight = filer.inFlight; // count only the large reports from here on
+
+    release();
+    expect(await statuses(pending)).toEqual([201, 201, 201, 201]);
+    expect(filer.maxInFlight).toBe(2);
+  });
+
+  it("gates a body of unknown length, but refuses an oversized declared one without waiting", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 1 });
+    const release = hold(filer);
+    const first = post(app, { ...report, screenshots: [shot(png())] }); // no content-length: gated
+    await tick();
+    expect(filer.inFlight).toBe(1);
+    const unknown = post(app, report, { "x-forwarded-for": "198.51.100.2" });
+    await tick();
+    expect(filer.calls).toBe(1); // still waiting for the slot
+
+    const oversized = await post(app, report, { "content-length": String(10 * MiB), "x-forwarded-for": "198.51.100.3" });
+    expect(oversized.status).toBe(413);
+
+    filer.hold = undefined;
+    release();
+    expect((await first).status).toBe(201);
+    expect((await unknown).status).toBe(201);
+  });
+
+  it("frees the slot when a large report is refused or fails", async () => {
+    const { app, filer } = setup({ maxLargeInFlight: 1 });
+    const bad = sized({ ...report, screenshots: [{ data: "%%%%" }], padding: "x" });
+    expect((await post(app, bad.text, bad.headers)).status).toBe(400);
+    filer.failWith = new GitHubError("down");
+    const large = sized({ ...report, screenshots: [shot(png(pngChunk("prVt", new Uint8Array(20_000))))] });
+    expect((await post(app, large.text, large.headers)).status).toBe(502);
+    filer.failWith = undefined;
+    expect((await post(app, large.text, { ...large.headers, "x-forwarded-for": "198.51.100.4" })).status).toBe(201);
+  });
+});
+
 describe("OPTIONS /v1/reports", () => {
   it("answers a preflight from any configured origin", async () => {
     const { app } = setup();

@@ -24,6 +24,8 @@ export interface AppOptions {
   now?: () => number;
   /** Six lowercase hex digits naming a report's screenshot folder; random by default. */
   randomHex?: () => string;
+  /** Large bodies read and handled at once; the rest wait their turn. Defaults to 3. */
+  maxLargeInFlight?: number;
 }
 
 /** Three 2 MiB screenshots, base64-encoded, plus the text. */
@@ -31,6 +33,29 @@ const MAX_BODY_BYTES = 9 * 1024 * 1024;
 const MAX_USER_AGENT = 512;
 
 type Env = { Bindings: Partial<HttpBindings> };
+
+/** Bodies up to this size (a report without screenshots) are never made to wait. */
+const SMALL_BODY_BYTES = 16 * 1024;
+
+/**
+ * Lets `limit` holders in at once and queues the rest in order. A queued request has not had its
+ * body read, so it holds a socket, not memory: the rate limits are checked only after parsing,
+ * and this is what bounds the memory a flood of 9 MB requests can take.
+ */
+function slots(limit: number): () => Promise<() => void> {
+  let free = limit;
+  const waiting: (() => void)[] = [];
+  const release = () => {
+    const next = waiting.shift();
+    if (next) next();
+    else free++;
+  };
+  return async () => {
+    if (free > 0) free--;
+    else await new Promise<void>((resolve) => waiting.push(resolve));
+    return release;
+  };
+}
 
 const EXTENSIONS: Record<ImageType, string> = { png: "png", jpeg: "jpg", webp: "webp" };
 
@@ -58,6 +83,7 @@ export function createApp(options: AppOptions): Hono<Env> {
   const log = options.log ?? (() => undefined);
   const now = options.now ?? Date.now;
   const randomHex = options.randomHex ?? (() => randomBytes(3).toString("hex"));
+  const largeBody = slots(options.maxLargeInFlight ?? 3);
   const allOrigins = new Set([...clients.values()].flatMap((client) => client.origins));
 
   const app = new Hono<Env>();
@@ -102,6 +128,19 @@ export function createApp(options: AppOptions): Hono<Env> {
         return fail(c, 415, "unsupported_media_type", "send application/json");
       }
       await next();
+    },
+    async (c, next) => {
+      // A declared length over the limit is refused by bodyLimit at once, without waiting; an
+      // unknown length (chunked) could be anything, so it waits like a large one.
+      const header = c.req.header("content-length");
+      const length = header === undefined ? NaN : Number(header);
+      if (length <= SMALL_BODY_BYTES || length > MAX_BODY_BYTES) return next();
+      const release = await largeBody();
+      try {
+        await next();
+      } finally {
+        release();
+      }
     },
     bodyLimit({
       maxSize: MAX_BODY_BYTES,

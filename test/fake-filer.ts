@@ -6,14 +6,25 @@ import type { Issue } from "../src/issue.js";
 export class FakeFiler implements IssueFiler {
   filed: { repo: RepoRef; issue: Issue; screenshots: readonly ScreenshotFile[] }[] = [];
   calls = 0;
+  inFlight = 0;
+  maxInFlight = 0;
   failWith: Error | undefined;
-  fileIssue(repo: RepoRef, build: Issue | IssueBuilder, screenshots: readonly ScreenshotFile[] = []): Promise<number> {
+  /** While set, every call waits for it before filing. */
+  hold: Promise<void> | undefined;
+  async fileIssue(repo: RepoRef, build: Issue | IssueBuilder, screenshots: readonly ScreenshotFile[] = []): Promise<number> {
     this.calls++;
-    if (this.failWith) return Promise.reject(this.failWith);
+    this.inFlight++;
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight);
+    try {
+      await this.hold;
+    } finally {
+      this.inFlight--;
+    }
+    if (this.failWith) throw this.failWith;
     const urls = screenshots.map((file) => `https://github.com/stored/${file.path}?raw=true`);
     const issue = typeof build === "function" ? build(urls) : build;
     this.filed.push({ repo, issue, screenshots });
-    return Promise.resolve(100 + this.filed.length);
+    return 100 + this.filed.length;
   }
   isInstalled(): Promise<boolean> {
     return Promise.resolve(true);
